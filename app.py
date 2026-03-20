@@ -17,6 +17,8 @@ uploaded_file = st.sidebar.file_uploader("Upload Mercury CSV", type="csv")
 hc_def = "Headcount (HC) Needed: The number of full-time employees required for this specific week's volume."
 aht_def = "Cleaned AHT: The 95th Percentile Trimmed Mean. Removes the slowest 5% of 'glitch' tasks."
 prod_def = "Productive Hours: Actual hours spent processing (excluding breaks/meetings)."
+util_def = "Utilization %: Percentage of available team hours consumed by predicted work. Above 100% means you are understaffed."
+surp_def = "Surplus/Deficit: Positive (+) means you have extra people. Negative (-) means you need more people."
 
 qas_per_site = st.sidebar.number_input("Current QAs per Locale", min_value=1, value=10, help=hc_def)
 prod_hours = st.sidebar.slider("Daily Productive Hours", 5.0, 9.0, 7.5, help=prod_def)
@@ -72,16 +74,17 @@ if uploaded_file:
             st.subheader("Historical Performance (Jan 1 - Mar 18)")
             summary_loc = f_df.groupby('locale').agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
             summary_loc['Avg Weekly Units'] = (summary_loc['units'] / 11).astype(int)
-            st.dataframe(summary_loc.rename(columns={'aht': 'Cleaned AHT (s)'}), use_container_width=True)
+            
+            # Formatting for Display
+            st.dataframe(summary_loc.rename(columns={'aht': 'Cleaned AHT (s)'}).style.format({'Cleaned AHT (s)': '{:.1f}'}), use_container_width=True)
             
             st.write("### 🛠️ Workflow Level Audit")
             hist_wf = f_df.groupby(['locale', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
-            st.dataframe(hist_wf.rename(columns={'aht': 'Cleaned AHT (s)'}), use_container_width=True)
+            st.dataframe(hist_wf.rename(columns={'aht': 'Cleaned AHT (s)'}).style.format({'Cleaned AHT (s)': '{:.1f}'}), use_container_width=True)
 
         with tab2:
             st.subheader("Weekly Forecast Explorer")
             
-            # --- WEEK SELECTOR DROPDOWN ---
             week_options = []
             for i in range(1, 5):
                 m_date = start_of_week_1 + timedelta(weeks=i-1)
@@ -91,13 +94,12 @@ if uploaded_file:
             selected_week_str = st.selectbox("Select Forecast Week:", week_options)
             week_idx = int(selected_week_str.split(":")[0].split(" ")[1])
             
-            st.info(f"💡 Showing predictions for **{selected_week_str}**. Calculations exclude Sat/Sun.")
+            st.info(f"💡 Predictions for **{selected_week_str}**. (Sat/Sun excluded)")
             
-            # --- CALCULATIONS FOR SELECTED WEEK ---
+            # Calculations
             week_results = []
             wf_details = []
             
-            # Locale Summary
             for loc in f_df['locale'].unique():
                 loc_data = f_df[f_df['locale'] == loc]
                 base_weekly = loc_data['units'].sum() / 11
@@ -110,12 +112,11 @@ if uploaded_file:
                 week_results.append({
                     "Locale": loc,
                     "Total Exp. Volume": int(pred_vol),
-                    "Utilization %": round((req_hours / (qas_per_site * prod_hours * 5)) * 100, 1),
-                    "HC Needed": round(hc_needed, 1),
-                    "Surplus/Deficit": round(qas_per_site - hc_needed, 1)
+                    "Utilization %": (req_hours / (qas_per_site * prod_hours * 5)) * 100,
+                    "HC Needed": hc_needed,
+                    "Surplus/Deficit": qas_per_site - hc_needed
                 })
 
-            # Workflow Breakdown
             wf_group = f_df.groupby(['locale', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
             for _, row in wf_group.iterrows():
                 base_wf_vol = row['units'] / 11
@@ -125,15 +126,25 @@ if uploaded_file:
                     "Locale": row['locale'],
                     "Transformation Type": row['workflow'],
                     "Exp. Units": int(pred_wf_vol),
-                    "Req. Prod Hours": round(req_hrs_wf, 1)
+                    "Req. Prod Hours": req_hrs_wf
                 })
 
-            # Display
-            st.write("### 📍 Locale Staffing Status")
-            st.dataframe(pd.DataFrame(week_results).style.applymap(lambda x: 'background-color: #ffcccc' if x < 0 else 'background-color: #ccffcc', subset=['Surplus/Deficit']), use_container_width=True)
+            # Display with strict formatting to remove extra zeros
+            st.write("### 📍 Locale Staffing Status", help=f"{util_def} | {hc_def} | {surp_def}")
+            res_df = pd.DataFrame(week_results)
+            st.dataframe(
+                res_df.style.applymap(lambda x: 'background-color: #ffcccc' if x < 0 else 'background-color: #ccffcc', subset=['Surplus/Deficit'])
+                .format({'Utilization %': '{:.1f}%', 'HC Needed': '{:.1f}', 'Surplus/Deficit': '{:.1f}'}), 
+                use_container_width=True
+            )
             
-            st.write("### 🛠️ Transformation Type Breakdown")
-            st.dataframe(pd.DataFrame(wf_details).sort_values(['Locale', 'Req. Prod Hours'], ascending=[True, False]), use_container_width=True)
+            st.write("### 🛠️ Transformation Type Breakdown", help="Breaks down exactly how many hours of work each workflow contributes to the total.")
+            wf_df = pd.DataFrame(wf_details)
+            st.dataframe(
+                wf_df.sort_values(['Locale', 'Req. Prod Hours'], ascending=[True, False])
+                .style.format({'Req. Prod Hours': '{:.1f}'}), 
+                use_container_width=True
+            )
 
 else:
     st.info("Upload Mercury CSV to activate the Dynamic Planner.")
