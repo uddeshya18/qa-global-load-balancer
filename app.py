@@ -69,23 +69,40 @@ if uploaded_file:
         tab1, tab2 = st.tabs(["📊 Historical Review", "🚀 Forecast & Capacity"])
 
         with tab1:
-            st.subheader("Historical Performance Metrics")
-            summary = f_df.groupby('locale').agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
-            summary['Weekly Units'] = (summary['units'] / WEEKS_IN_DATA).astype(int)
+            st.subheader("Q1 Performance Audit (Jan 1 - Mar 18)")
             
+            # Key Metrics Header
+            summary_loc = f_df.groupby('locale').agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
+            total_units = summary_loc['units'].sum()
+            avg_network_aht = summary_loc['aht'].mean()
+
             c1, c2, c3 = st.columns(3)
-            c1.metric("Selected Units", f"{int(summary['units'].sum()):,}")
-            c2.metric("Avg Weekly Vol", f"{int(summary['Weekly Units'].sum()):,}")
-            c3.metric("Trimmed AHT", f"{summary['aht'].mean():.1f}s")
+            c1.metric("Total Q1 Units", f"{int(total_units):,}")
+            c2.metric("Weekly Avg Velocity", f"{int(total_units/WEEKS_IN_DATA):,}")
+            c3.metric("Network Cleaned AHT", f"{avg_network_aht:.1f}s")
 
             st.divider()
-            st.dataframe(summary.rename(columns={'aht': 'Cleaned AHT (s)'}), use_container_width=True)
-            st.bar_chart(summary.set_index('locale')['Weekly Units'])
+            
+            # NEW: Granular Workflow Table in Historical Tab
+            st.write("### 🛠️ Historical Volume by Transformation Type")
+            hist_wf = f_df.groupby(['locale', 'workflow']).agg({
+                'units': 'sum',
+                'aht': get_trimmed_mean
+            }).reset_index()
+            
+            hist_wf['Weekly Units'] = (hist_wf['units'] / WEEKS_IN_DATA).astype(int)
+            hist_wf = hist_wf.rename(columns={'aht': 'Cleaned AHT (s)', 'units': 'Total Q1 Units'})
+            
+            st.dataframe(hist_wf.sort_values(['locale', 'Total Q1 Units'], ascending=[True, False]), use_container_width=True)
+            
+            st.write("### 📈 Locale Throughput (Weekly)")
+            st.bar_chart(summary_loc.set_index('locale')['units'] / WEEKS_IN_DATA)
 
         with tab2:
             st.subheader("Future Capacity Forecaster")
+            st.write(f"Projecting load for the next 4 weeks (Assuming {growth_buffer}% Growth)")
             
-            # --- SECTION 1: LOCALE SUMMARY ---
+            # LOCALE SUMMARY
             st.write("### 📍 Summary by Locale")
             forecast_results = []
             for loc in f_df['locale'].unique():
@@ -110,18 +127,14 @@ if uploaded_file:
             
             st.dataframe(f_res_df.style.applymap(color_deficit, subset=['Surplus/Deficit']), use_container_width=True)
 
-            # --- SECTION 2: WORKFLOW DETAIL ---
+            # WORKFLOW DETAIL
             st.divider()
             st.write("### 🛠️ Detail per Transformation Type")
-            
             wf_details = []
-            # Grouping by Locale AND Workflow to see the granular split
             wf_group = f_df.groupby(['locale', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
-            
             for _, row in wf_group.iterrows():
                 pred_vol = (row['units'] / WEEKS_IN_DATA) * (1 + (growth_buffer / 100))
                 req_hrs = (pred_vol * row['aht']) / 3600
-                
                 wf_details.append({
                     "Locale": row['locale'],
                     "Workflow": row['workflow'],
@@ -129,7 +142,6 @@ if uploaded_file:
                     "Pred. Units/Week": int(pred_vol),
                     "Req. Prod Hours": round(req_hrs, 1)
                 })
-            
             st.dataframe(pd.DataFrame(wf_details).sort_values(['Locale', 'Req. Prod Hours'], ascending=[True, False]), use_container_width=True)
 
 else:
