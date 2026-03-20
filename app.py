@@ -70,67 +70,78 @@ if uploaded_file:
         if len(group) < 3: return group.median()
         return group[group <= group.quantile(0.95)].mean()
 
-    # --- TABBED INTERFACE ---
-    tab1, tab2 = st.tabs(["📊 Historical Review", "🚀 Forecast & Capacity"])
+    # --- SAFETY GATE: CHECK IF DATA IS SELECTED ---
+    if f_df.empty:
+        st.warning("⚠️ **No data selected.** Please select at least one Site and Locale in the sidebar to view the analysis.")
+    else:
+        # --- TABBED INTERFACE ---
+        tab1, tab2 = st.tabs(["📊 Historical Review", "🚀 Forecast & Capacity"])
 
-    with tab1:
-        st.subheader("Historical Performance Metrics")
-        
-        # Site Summary
-        summary = f_df.groupby('locale').agg({
-            'units': 'sum',
-            'aht': get_trimmed_mean
-        }).reset_index()
-        
-        summary['Weekly Units'] = (summary['units'] / WEEKS_IN_DATA).astype(int)
-        summary = summary.rename(columns={'aht': 'Cleaned AHT (s)', 'units': 'Total Units'})
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Selected Units", f"{int(summary['Total Units'].sum()):,}")
-        c2.metric("Avg Weekly Vol", f"{int(summary['Weekly Units'].sum()):,}")
-        c3.metric("Trimmed AHT", f"{summary['Cleaned AHT (s)'].mean():.1f}s")
-
-        st.divider()
-        st.write("**Performance by Locale**")
-        st.dataframe(summary[['locale', 'Total Units', 'Weekly Units', 'Cleaned AHT (s)']], use_container_width=True)
-        st.bar_chart(summary.set_index('locale')['Weekly Units'])
-
-    with tab2:
-        st.subheader("Future Capacity Forecaster")
-        st.write(f"Projecting load for the next 4 weeks (Assuming {growth_buffer}% Growth)")
-        
-        forecast_results = []
-        for loc in f_df['locale'].unique():
-            loc_data = f_df[f_df['locale'] == loc]
+        with tab1:
+            st.subheader("Historical Performance Metrics")
             
-            # Math
-            curr_weekly = loc_data['units'].sum() / WEEKS_IN_DATA
-            pred_weekly = curr_weekly * (1 + (growth_buffer / 100))
-            aht_val = get_trimmed_mean(loc_data['aht'])
+            # Site Summary aggregation
+            summary = f_df.groupby('locale').agg({
+                'units': 'sum',
+                'aht': get_trimmed_mean
+            }).reset_index()
             
-            req_hours = (pred_weekly * aht_val) / 3600
-            avail_hours = qas_per_site * prod_hours * 5
-            util_pct = (req_hours / avail_hours) * 100
-            hc_needed = req_hours / (prod_hours * 5)
-            
-            forecast_results.append({
-                "Locale": loc,
-                "Predicted Units/Week": int(pred_weekly),
-                "Utilization %": round(util_pct, 1),
-                "HC Needed": round(hc_needed, 1),
-                "Current HC": qas_per_site,
-                "Surplus/Deficit": round(qas_per_site - hc_needed, 1)
-            })
+            summary['Weekly Units'] = (summary['units'] / WEEKS_IN_DATA).astype(int)
+            summary = summary.rename(columns={'aht': 'Cleaned AHT (s)', 'units': 'Total Units'})
 
-        f_results_df = pd.DataFrame(forecast_results)
-        
-        # Display Table with Highlighting
-        def color_deficit(val):
-            return 'background-color: #ffcccc' if val < 0 else 'background-color: #ccffcc'
-        
-        st.dataframe(f_results_df.style.applymap(color_deficit, subset=['Surplus/Deficit']), use_container_width=True)
-        
-        st.warning("⚠️ **Note:** Red cells in 'Surplus/Deficit' indicate locales where current headcount cannot meet the predicted volume.")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Selected Units", f"{int(summary['Total Units'].sum()):,}")
+            c2.metric("Avg Weekly Vol", f"{int(summary['Weekly Units'].sum()):,}")
+            c3.metric("Trimmed AHT", f"{summary['Cleaned AHT (s)'].mean():.1f}s")
+
+            st.divider()
+            st.write("**Performance by Locale**")
+            st.dataframe(summary[['locale', 'Total Units', 'Weekly Units', 'Cleaned AHT (s)']], use_container_width=True)
+            st.bar_chart(summary.set_index('locale')['Weekly Units'])
+
+        with tab2:
+            st.subheader("Future Capacity Forecaster")
+            st.write(f"Projecting load for the next 4 weeks (Assuming {growth_buffer}% Growth)")
+            
+            forecast_results = []
+            for loc in f_df['locale'].unique():
+                loc_data = f_df[f_df['locale'] == loc]
+                
+                # Math
+                curr_weekly = loc_data['units'].sum() / WEEKS_IN_DATA
+                pred_weekly = curr_weekly * (1 + (growth_buffer / 100))
+                aht_val = get_trimmed_mean(loc_data['aht'])
+                
+                req_hours = (pred_weekly * aht_val) / 3600
+                avail_hours = qas_per_site * prod_hours * 5
+                util_pct = (req_hours / avail_hours) * 100
+                hc_needed = req_hours / (prod_hours * 5)
+                
+                forecast_results.append({
+                    "Locale": loc,
+                    "Predicted Units/Week": int(pred_weekly),
+                    "Utilization %": round(util_pct, 1),
+                    "HC Needed": round(hc_needed, 1),
+                    "Current HC": qas_per_site,
+                    "Surplus/Deficit": round(qas_per_site - hc_needed, 1)
+                })
+
+            f_results_df = pd.DataFrame(forecast_results)
+            
+            # --- FINAL SAFETY CHECK BEFORE STYLING ---
+            if not f_results_df.empty:
+                def color_deficit(val):
+                    return 'background-color: #ffcccc' if val < 0 else 'background-color: #ccffcc'
+                
+                # Render styled dataframe
+                st.dataframe(
+                    f_results_df.style.applymap(color_deficit, subset=['Surplus/Deficit']), 
+                    use_container_width=True
+                )
+                
+                st.warning("⚠️ **Note:** Red cells in 'Surplus/Deficit' indicate locales where current headcount cannot meet the predicted volume.")
+            else:
+                st.info("Insufficient data to generate a forecast for the current selection.")
 
 else:
     st.info("Upload the Mercury CSV and use the sidebar filters to drill down into specific branches or locales.")
