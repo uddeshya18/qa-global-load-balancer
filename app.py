@@ -3,21 +3,21 @@ import pandas as pd
 import numpy as np
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Global Predictor Engine", layout="wide")
+st.set_page_config(page_title="Global Performance & Forecast", layout="wide")
 
 st.title("🔮 Global Performance & Forecast Engine")
-st.markdown("### Historical Benchmarking + 4-Week Capacity Projection")
+st.markdown("### Historical Analysis (Jan-Mar) & April Capacity Projection")
 
-# --- SIDEBAR ---
-st.sidebar.header("⚙️ Global Controls")
+# --- SIDEBAR: GLOBAL CONTROLS & FILTERS ---
+st.sidebar.header("⚙️ Global Settings")
 uploaded_file = st.sidebar.file_uploader("Upload Mercury CSV", type="csv")
 
-qas_per_site = st.sidebar.number_input("Current QAs per Locale", min_value=1, value=10)
+# Global variables for the math
+qas_per_site = st.sidebar.number_input("Current QAs (per selected locale)", min_value=1, value=10)
 prod_hours = st.sidebar.slider("Daily Productive Hours", 5.0, 9.0, 7.5)
-growth_buffer = st.sidebar.slider("Expected Volume Growth (%)", 0, 50, 10)
+growth_buffer = st.sidebar.slider("Expected Growth (%)", 0, 100, 10)
 
-# Constants based on your data (Jan 1 - March 18)
-WEEKS_IN_DATA = 11 
+WEEKS_IN_DATA = 11 # Jan 1 - March 18
 
 if uploaded_file:
     raw_df = pd.read_csv(uploaded_file)
@@ -30,84 +30,107 @@ if uploaded_file:
         return None
 
     col_site = find_col(["Column-1", "Site"], raw_df.columns)
-    col_locale = find_col(["Column-2", "Locale"], raw_df.columns)
+    col_loc = find_col(["Column-2", "Locale"], raw_df.columns)
     col_wf = find_col(["Column-4", "Transformation Type"], raw_df.columns)
     col_aht = find_col(["Average Handle Time", "AHT"], raw_df.columns)
     col_units = find_col(["Processed Units", "Processed"], raw_df.columns)
 
-    df = raw_df[[col_site, col_locale, col_wf, col_aht, col_units]].copy()
+    # Data Cleaning
+    df = raw_df[[col_site, col_loc, col_wf, col_aht, col_units]].copy()
     df.columns = ['site', 'locale', 'workflow', 'aht', 'units']
     df['aht'] = pd.to_numeric(df['aht'], errors='coerce')
     df['units'] = pd.to_numeric(df['units'], errors='coerce')
     df = df.dropna(subset=['aht', 'units'])
 
-    # 2. CALCULATION ENGINE
+    # 2. DYNAMIC FILTERS (The Drill-Down)
+    st.sidebar.divider()
+    st.sidebar.subheader("🔍 Filter Data")
+    
+    # Site Filter
+    sites = sorted(df['site'].unique())
+    selected_sites = st.sidebar.multiselect("Filter by Site:", sites, default=sites)
+    
+    # Locale Filter (Dependent on Site)
+    locales = sorted(df[df['site'].isin(selected_sites)]['locale'].unique())
+    selected_locales = st.sidebar.multiselect("Filter by Locale:", locales, default=locales)
+    
+    # Workflow Filter (Dependent on Locale)
+    workflows = sorted(df[df['locale'].isin(selected_locales)]['workflow'].unique())
+    selected_wf = st.sidebar.selectbox("Filter by Workflow:", ["All Workflows"] + workflows)
+
+    # Applying the Filters
+    mask = (df['site'].isin(selected_sites)) & (df['locale'].isin(selected_locales))
+    if selected_wf != "All Workflows":
+        mask = mask & (df['workflow'] == selected_wf)
+    
+    f_df = df[mask]
+
+    # 3. CALCULATION ENGINE
     def get_trimmed_mean(group):
         if len(group) < 3: return group.median()
         return group[group <= group.quantile(0.95)].mean()
 
     # --- TABBED INTERFACE ---
-    tab1, tab2 = st.tabs(["📊 Historical Analysis", "🚀 Future Forecasting"])
+    tab1, tab2 = st.tabs(["📊 Historical Review", "🚀 Forecast & Capacity"])
 
     with tab1:
-        st.subheader("Q1 Performance Review (Jan 1 - Mar 18)")
+        st.subheader("Historical Performance Metrics")
         
-        # Weekly Metrics
-        weekly_units = df.groupby('locale')['units'].sum() / WEEKS_IN_DATA
-        avg_aht = df.groupby('locale')['aht'].apply(get_trimmed_mean)
-        
-        hist_df = pd.DataFrame({
-            "Avg Weekly Units": weekly_units.astype(int),
-            "Trimmed AHT (s)": avg_aht.round(1)
+        # Site Summary
+        summary = f_df.groupby('locale').agg({
+            'units': 'sum',
+            'aht': get_trimmed_mean
         }).reset_index()
         
-        st.dataframe(hist_df.sort_values("Avg Weekly Units", ascending=False), use_container_width=True)
-        st.bar_chart(hist_df.set_index('locale')['Avg Weekly Units'])
+        summary['Weekly Units'] = (summary['units'] / WEEKS_IN_DATA).astype(int)
+        summary = summary.rename(columns={'aht': 'Cleaned AHT (s)', 'units': 'Total Units'})
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Selected Units", f"{int(summary['Total Units'].sum()):,}")
+        c2.metric("Avg Weekly Vol", f"{int(summary['Weekly Units'].sum()):,}")
+        c3.metric("Trimmed AHT", f"{summary['Cleaned AHT (s)'].mean():.1f}s")
+
+        st.divider()
+        st.write("**Performance by Locale**")
+        st.dataframe(summary[['locale', 'Total Units', 'Weekly Units', 'Cleaned AHT (s)']], use_container_width=True)
+        st.bar_chart(summary.set_index('locale')['Weekly Units'])
 
     with tab2:
-        st.subheader("Next 4-Week Capacity Forecast")
-        st.write(f"Predicting load for March 19 - April 15 based on a **{growth_buffer}%** growth trend.")
+        st.subheader("Future Capacity Forecaster")
+        st.write(f"Projecting load for the next 4 weeks (Assuming {growth_buffer}% Growth)")
         
-        forecast_data = []
-        for locale in df['locale'].unique():
-            loc_data = df[df['locale'] == locale]
+        forecast_results = []
+        for loc in f_df['locale'].unique():
+            loc_data = f_df[f_df['locale'] == loc]
             
-            # 1. Current Velocity
-            current_weekly_units = loc_data['units'].sum() / WEEKS_IN_DATA
+            # Math
+            curr_weekly = loc_data['units'].sum() / WEEKS_IN_DATA
+            pred_weekly = curr_weekly * (1 + (growth_buffer / 100))
+            aht_val = get_trimmed_mean(loc_data['aht'])
             
-            # 2. Predicted Velocity (Current + Buffer)
-            predicted_weekly_units = current_weekly_units * (1 + (growth_buffer / 100))
+            req_hours = (pred_weekly * aht_val) / 3600
+            avail_hours = qas_per_site * prod_hours * 5
+            util_pct = (req_hours / avail_hours) * 100
+            hc_needed = req_hours / (prod_hours * 5)
             
-            # 3. Efficiency (AHT)
-            clean_aht = get_trimmed_mean(loc_data['aht'])
-            
-            # 4. Required Capacity (Math: Units * AHT / 3600)
-            req_hours_weekly = (predicted_weekly_units * clean_aht) / 3600
-            avail_hours_weekly = qas_per_site * prod_hours * 5
-            
-            # 5. Headcount Gap
-            hc_needed = req_hours_weekly / (prod_hours * 5)
-            hc_gap = hc_needed - qas_per_site
-            
-            forecast_data.append({
-                "Locale": locale,
-                "Predicted Units/Week": int(predicted_weekly_units),
-                "Req. Hours/Week": round(req_hours_weekly, 1),
-                "Utilization %": round((req_hours_weekly / avail_hours_weekly) * 100, 1),
-                "Headcount Needed": round(hc_needed, 1),
-                "HC Gap/Surplus": round(-hc_gap, 1) # Positive means you have extra people
+            forecast_results.append({
+                "Locale": loc,
+                "Predicted Units/Week": int(pred_weekly),
+                "Utilization %": round(util_pct, 1),
+                "HC Needed": round(hc_needed, 1),
+                "Current HC": qas_per_site,
+                "Surplus/Deficit": round(qas_per_site - hc_needed, 1)
             })
 
-        forecast_df = pd.DataFrame(forecast_data)
+        f_results_df = pd.DataFrame(forecast_results)
         
-        # Highlighting the Red Zones
-        def color_hc(val):
-            color = 'red' if val < 0 else 'green'
-            return f'color: {color}'
-
-        st.table(forecast_df.style.applymap(color_hc, subset=['HC Gap/Surplus']))
+        # Display Table with Highlighting
+        def color_deficit(val):
+            return 'background-color: #ffcccc' if val < 0 else 'background-color: #ccffcc'
         
-        st.info("💡 **Interpretation:** A negative 'HC Gap' means you need to hire or move volume. A positive number means that locale can take on more work.")
+        st.dataframe(f_results_df.style.applymap(color_deficit, subset=['Surplus/Deficit']), use_container_width=True)
+        
+        st.warning("⚠️ **Note:** Red cells in 'Surplus/Deficit' indicate locales where current headcount cannot meet the predicted volume.")
 
 else:
-    st.info("Upload CSV to generate historical analysis and future capacity forecasts.")
+    st.info("Upload the Mercury CSV and use the sidebar filters to drill down into specific branches or locales.")
