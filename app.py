@@ -1,21 +1,36 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from datetime import datetime, timedelta
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Global Predictor Engine", layout="wide")
+st.set_page_config(page_title="Dynamic Global Forecast", layout="wide")
 
-st.title("🔮 Global Performance & Forecast Engine")
-st.markdown("### Historical Analysis (Jan-Mar) & Automated Action Plan")
+st.title("🔮 Dynamic Global Performance & Forecast")
+st.markdown(f"### Current Date: **{datetime.now().strftime('%B %d, %y')}** | 4-Week Strategic Projection")
 
-# --- SIDEBAR: GLOBAL CONTROLS & FILTERS ---
+# --- SIDEBAR: GLOBAL CONTROLS ---
 st.sidebar.header("⚙️ Global Settings")
 uploaded_file = st.sidebar.file_uploader("Upload Mercury CSV", type="csv")
 
-qas_per_site = st.sidebar.number_input("Current QAs (per selected locale)", min_value=1, value=10)
-prod_hours = st.sidebar.slider("Daily Productive Hours", 5.0, 9.0, 7.5)
-growth_buffer = st.sidebar.slider("Expected Growth (%)", 0, 100, 10)
+qas_per_site = st.sidebar.number_input(
+    "Current QAs (per selected locale)", 
+    min_value=1, value=10, 
+    help="The total number of full-time QA resources currently assigned to the selected locale."
+)
+prod_hours = st.sidebar.slider(
+    "Daily Productive Hours", 5.0, 9.0, 7.5,
+    help="Actual time spent on tasks, excluding breaks, meetings, and training."
+)
+growth_buffer = st.sidebar.slider(
+    "Expected Growth (%)", 0, 100, 10,
+    help="The anticipated percentage increase in task volume for the next 4 weeks."
+)
 
+# --- DYNAMIC DATE CALCULATIONS ---
+current_date = datetime.now()
+forecast_end_date = current_date + timedelta(weeks=4)
+# Historical data period (Jan 1 to Mar 18 = ~11 weeks)
 WEEKS_IN_DATA = 11 
 
 if uploaded_file:
@@ -56,6 +71,9 @@ if uploaded_file:
     
     f_df = df[mask]
 
+    # Cleaned AHT Definition for Tooltips
+    aht_help = "95th Percentile Trimmed Mean: Removes the slowest 5% of tasks to eliminate technical glitches and noise."
+
     def get_trimmed_mean(group):
         if len(group) < 3: return group.median()
         return group[group <= group.quantile(0.95)].mean()
@@ -66,20 +84,18 @@ if uploaded_file:
         tab1, tab2 = st.tabs(["📊 Historical Review", "🚀 Forecast & Capacity"])
 
         with tab1:
-            st.subheader("Q1 Performance Audit")
+            st.subheader(f"Q1 Performance Audit (Reference Period: {WEEKS_IN_DATA} Weeks)")
             summary_loc = f_df.groupby('locale').agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
             st.dataframe(summary_loc.rename(columns={'aht': 'Cleaned AHT (s)'}), use_container_width=True)
-            st.write("### 🛠️ Historical Workflow Breakdown")
+            
+            st.write("### 🛠️ Workflow Level Statistics")
             hist_wf = f_df.groupby(['locale', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
             st.dataframe(hist_wf, use_container_width=True)
 
         with tab2:
-            st.subheader("Future Capacity Forecaster")
+            st.subheader(f"Next 4-Week Projection: {current_date.strftime('%d %b')} — {forecast_end_date.strftime('%d %b %Y')}")
             
-            # --- CALCULATE FORECASTS ---
             forecast_results = []
-            wf_details = []
-            
             for loc in f_df['locale'].unique():
                 loc_data = f_df[f_df['locale'] == loc]
                 curr_weekly = loc_data['units'].sum() / WEEKS_IN_DATA
@@ -98,38 +114,28 @@ if uploaded_file:
                 })
 
             f_res_df = pd.DataFrame(forecast_results)
+            st.write("**Forecast Summary by Locale**", help="HC Needed = (Total Time Required / Weekly Productive Hours per person). Surplus/Deficit shows how many people to move or hire.")
             st.dataframe(f_res_df.style.applymap(lambda x: 'background-color: #ffcccc' if x < 0 else 'background-color: #ccffcc', subset=['Surplus/Deficit']), use_container_width=True)
 
-            # --- DYNAMIC MANAGEMENT SUMMARY (The Final Polish) ---
+            # --- DYNAMIC ACTION PLAN ---
             st.divider()
             st.subheader("📢 Executive Action Plan")
             
             total_hc_deficit = f_res_df[f_res_df['Surplus/Deficit'] < 0]['Surplus/Deficit'].sum()
-            total_hc_surplus = f_res_df[f_res_df['Surplus/Deficit'] > 0]['Surplus/Deficit'].sum()
             highest_util = f_res_df.loc[f_res_df['Utilization %'].idxmax()]
             
             col_a, col_b = st.columns(2)
-            
             with col_a:
                 st.error("### 🚨 Critical Risks")
                 if total_hc_deficit < 0:
-                    st.write(f"* **Staffing Shortfall:** Across selected locales, you are short by **{abs(total_hc_deficit):.1f} HC**. You need to hire or reallocate immediately.")
-                st.write(f"* **Primary Bottleneck:** **{highest_util['Locale']}** is at **{highest_util['Utilization %']}%** capacity. Any further volume growth here will lead to immediate SLA failure.")
-                
-                # Find most time-consuming workflow
-                wf_sum = f_df.groupby('workflow').agg({'units': 'sum', 'aht': get_trimmed_mean})
-                wf_sum['Hours'] = (wf_sum['units'] / WEEKS_IN_DATA * (1 + growth_buffer/100) * wf_sum['aht']) / 3600
-                heavy_wf = wf_sum['Hours'].idxmax()
-                st.write(f"* **Heaviest Workflow:** **{heavy_wf}** requires the most manual effort (**{wf_sum['Hours'].max():.1f} hours/week**). Focus optimization efforts here.")
+                    st.write(f"* **Staffing Shortfall:** From now until **{forecast_end_date.strftime('%d %b')}**, you are short by **{abs(total_hc_deficit):.1f} people**.")
+                st.write(f"* **Bottle-neck Locale:** **{highest_util['Locale']}** will hit **{highest_util['Utilization %']}%** capacity based on historical performance.")
 
             with col_b:
                 st.success("### ✅ Opportunities")
-                if total_hc_surplus > 0:
-                    st.write(f"* **Available Capacity:** You have a surplus of **{total_hc_surplus:.1f} HC** across certain nodes. These resources can be shifted to cover deficits.")
-                
-                # Finding the most efficient locale (lowest AHT)
-                best_loc = summary_loc.loc[summary_loc['aht'].idxmin()]
-                st.write(f"* **Efficiency Leader:** **{best_loc['locale']}** has the best AHT (**{best_loc['aht']:.1f}s**). Consider using this locale as the 'Center of Excellence' for training others.")
+                total_surplus = f_res_df[f_res_df['Surplus/Deficit'] > 0]['Surplus/Deficit'].sum()
+                st.write(f"* **Internal Mobility:** You have **{total_surplus:.1f} HC** available to reallocate from surplus sites to deficit sites.")
+                st.write(f"* **Planning Window:** You have 4 weeks to adjust volume before the projected peak on **{forecast_end_date.strftime('%d %b')}**.")
 
 else:
-    st.info("Upload the Mercury CSV to generate the historical audit and executive action plan.")
+    st.info("Upload CSV to generate your dynamic 4-week forecast.")
