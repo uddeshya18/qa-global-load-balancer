@@ -3,17 +3,21 @@ import pandas as pd
 import numpy as np
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Global Performance Engine", layout="wide")
+st.set_page_config(page_title="Global Predictor Engine", layout="wide")
 
-st.title("📊 Global Performance & Efficiency Engine")
-st.markdown("### Advanced Multi-Filter & Task Benchmarking")
+st.title("🔮 Global Performance & Forecast Engine")
+st.markdown("### Historical Benchmarking + 4-Week Capacity Projection")
 
 # --- SIDEBAR ---
 st.sidebar.header("⚙️ Global Controls")
 uploaded_file = st.sidebar.file_uploader("Upload Mercury CSV", type="csv")
 
-qas_per_site = st.sidebar.number_input("Average QAs per Locale", min_value=1, value=10)
+qas_per_site = st.sidebar.number_input("Current QAs per Locale", min_value=1, value=10)
 prod_hours = st.sidebar.slider("Daily Productive Hours", 5.0, 9.0, 7.5)
+growth_buffer = st.sidebar.slider("Expected Volume Growth (%)", 0, 50, 10)
+
+# Constants based on your data (Jan 1 - March 18)
+WEEKS_IN_DATA = 11 
 
 if uploaded_file:
     raw_df = pd.read_csv(uploaded_file)
@@ -31,75 +35,79 @@ if uploaded_file:
     col_aht = find_col(["Average Handle Time", "AHT"], raw_df.columns)
     col_units = find_col(["Processed Units", "Processed"], raw_df.columns)
 
-    # Create Clean DF
     df = raw_df[[col_site, col_locale, col_wf, col_aht, col_units]].copy()
     df.columns = ['site', 'locale', 'workflow', 'aht', 'units']
     df['aht'] = pd.to_numeric(df['aht'], errors='coerce')
     df['units'] = pd.to_numeric(df['units'], errors='coerce')
     df = df.dropna(subset=['aht', 'units'])
 
-    # 2. DYNAMIC FILTERS (The "Drill-Down" Feature)
-    st.sidebar.divider()
-    st.sidebar.subheader("🔍 Filter Dashboard")
-    
-    selected_site = st.sidebar.multiselect("Select Site(s):", options=df['site'].unique(), default=df['site'].unique())
-    
-    # Locale filter updates based on Site selection
-    available_locales = df[df['site'].isin(selected_site)]['locale'].unique()
-    selected_locale = st.sidebar.multiselect("Select Locale(s):", options=available_locales, default=available_locales)
-    
-    # Workflow filter updates based on Locale selection
-    available_wfs = df[df['locale'].isin(selected_locale)]['workflow'].unique()
-    selected_wf = st.sidebar.selectbox("Benchmark Specific Workflow:", options=["All Workflows"] + list(available_wfs))
-
-    # Apply Filters to the Data
-    filtered_df = df[(df['site'].isin(selected_site)) & (df['locale'].isin(selected_locale))]
-    if selected_wf != "All Workflows":
-        filtered_df = filtered_df[filtered_df['workflow'] == selected_wf]
-
-    # 3. THE CALCULATION ENGINE
+    # 2. CALCULATION ENGINE
     def get_trimmed_mean(group):
         if len(group) < 3: return group.median()
         return group[group <= group.quantile(0.95)].mean()
 
-    # Metrics
-    site_wf_perf = filtered_df.groupby(['locale', 'workflow'])['aht'].apply(get_trimmed_mean).reset_index()
-    
-    # 4. DASHBOARD UI
-    # Top Row: Key Metrics
-    total_units = filtered_df['units'].sum()
-    avg_aht = filtered_df['aht'].mean()
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Filtered Units", f"{int(total_units):,}")
-    c2.metric("Avg AHT (Filtered)", f"{avg_aht:.1f}s")
-    c3.metric("Active Locales", len(filtered_df['locale'].unique()))
+    # --- TABBED INTERFACE ---
+    tab1, tab2 = st.tabs(["📊 Historical Analysis", "🚀 Future Forecasting"])
 
-    st.divider()
+    with tab1:
+        st.subheader("Q1 Performance Review (Jan 1 - Mar 18)")
+        
+        # Weekly Metrics
+        weekly_units = df.groupby('locale')['units'].sum() / WEEKS_IN_DATA
+        avg_aht = df.groupby('locale')['aht'].apply(get_trimmed_mean)
+        
+        hist_df = pd.DataFrame({
+            "Avg Weekly Units": weekly_units.astype(int),
+            "Trimmed AHT (s)": avg_aht.round(1)
+        }).reset_index()
+        
+        st.dataframe(hist_df.sort_values("Avg Weekly Units", ascending=False), use_container_width=True)
+        st.bar_chart(hist_df.set_index('locale')['Avg Weekly Units'])
 
-    # Left Column: Table | Right Column: Chart
-    col_left, col_right = st.columns([1, 1])
+    with tab2:
+        st.subheader("Next 4-Week Capacity Forecast")
+        st.write(f"Predicting load for March 19 - April 15 based on a **{growth_buffer}%** growth trend.")
+        
+        forecast_data = []
+        for locale in df['locale'].unique():
+            loc_data = df[df['locale'] == locale]
+            
+            # 1. Current Velocity
+            current_weekly_units = loc_data['units'].sum() / WEEKS_IN_DATA
+            
+            # 2. Predicted Velocity (Current + Buffer)
+            predicted_weekly_units = current_weekly_units * (1 + (growth_buffer / 100))
+            
+            # 3. Efficiency (AHT)
+            clean_aht = get_trimmed_mean(loc_data['aht'])
+            
+            # 4. Required Capacity (Math: Units * AHT / 3600)
+            req_hours_weekly = (predicted_weekly_units * clean_aht) / 3600
+            avail_hours_weekly = qas_per_site * prod_hours * 5
+            
+            # 5. Headcount Gap
+            hc_needed = req_hours_weekly / (prod_hours * 5)
+            hc_gap = hc_needed - qas_per_site
+            
+            forecast_data.append({
+                "Locale": locale,
+                "Predicted Units/Week": int(predicted_weekly_units),
+                "Req. Hours/Week": round(req_hours_weekly, 1),
+                "Utilization %": round((req_hours_weekly / avail_hours_weekly) * 100, 1),
+                "Headcount Needed": round(hc_needed, 1),
+                "HC Gap/Surplus": round(-hc_gap, 1) # Positive means you have extra people
+            })
 
-    with col_left:
-        st.subheader("📋 Performance Leaderboard")
-        # Ranking locales by their average AHT for the selected view
-        leaderboard = site_wf_perf.groupby('locale')['aht'].mean().sort_values().reset_index()
-        leaderboard.columns = ['Locale', 'Avg Trimmed AHT (s)']
-        st.table(leaderboard)
+        forecast_df = pd.DataFrame(forecast_data)
+        
+        # Highlighting the Red Zones
+        def color_hc(val):
+            color = 'red' if val < 0 else 'green'
+            return f'color: {color}'
 
-    with col_right:
-        st.subheader("📈 Cross-Locale Benchmarking")
-        chart_data = site_wf_perf.groupby('locale')['aht'].mean()
-        st.bar_chart(chart_data)
-
-    # 5. LOAD BALANCING INSIGHT
-    st.divider()
-    st.subheader("💡 Strategic Recommendation")
-    if selected_wf != "All Workflows":
-        best_locale = leaderboard['Locale'].iloc[0]
-        st.success(f"For **{selected_wf}**, the most efficient locale is **{best_locale}**. Consider routing overflow volume here to maximize throughput.")
-    else:
-        st.info("Select a specific workflow in the sidebar to see detailed routing recommendations.")
+        st.table(forecast_df.style.applymap(color_hc, subset=['HC Gap/Surplus']))
+        
+        st.info("💡 **Interpretation:** A negative 'HC Gap' means you need to hire or move volume. A positive number means that locale can take on more work.")
 
 else:
-    st.info("Please upload your Mercury CSV to begin.")
+    st.info("Upload CSV to generate historical analysis and future capacity forecasts.")
