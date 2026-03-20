@@ -6,13 +6,13 @@ import numpy as np
 st.set_page_config(page_title="Global Performance Engine", layout="wide")
 
 st.title("📊 Global Performance & Efficiency Engine")
-st.markdown("### Cross-Site Task Benchmarking & Load Balancing")
+st.markdown("### Advanced Multi-Filter & Task Benchmarking")
 
 # --- SIDEBAR ---
-st.sidebar.header("⚙️ Configuration")
+st.sidebar.header("⚙️ Global Controls")
 uploaded_file = st.sidebar.file_uploader("Upload Mercury CSV", type="csv")
 
-qas_per_site = st.sidebar.number_input("Total QAs per Site", min_value=1, value=10)
+qas_per_site = st.sidebar.number_input("Average QAs per Locale", min_value=1, value=10)
 prod_hours = st.sidebar.slider("Daily Productive Hours", 5.0, 9.0, 7.5)
 
 if uploaded_file:
@@ -31,71 +31,75 @@ if uploaded_file:
     col_aht = find_col(["Average Handle Time", "AHT"], raw_df.columns)
     col_units = find_col(["Processed Units", "Processed"], raw_df.columns)
 
-    if not all([col_site, col_wf, col_aht, col_units]):
-        st.error("Missing columns! Please check your CSV headers.")
-        st.stop()
-
     # Create Clean DF
     df = raw_df[[col_site, col_locale, col_wf, col_aht, col_units]].copy()
     df.columns = ['site', 'locale', 'workflow', 'aht', 'units']
-    
-    # Numeric Cleanup
     df['aht'] = pd.to_numeric(df['aht'], errors='coerce')
     df['units'] = pd.to_numeric(df['units'], errors='coerce')
     df = df.dropna(subset=['aht', 'units'])
 
-    # 2. CALCULATION ENGINE (Trimmed Mean)
+    # 2. DYNAMIC FILTERS (The "Drill-Down" Feature)
+    st.sidebar.divider()
+    st.sidebar.subheader("🔍 Filter Dashboard")
+    
+    selected_site = st.sidebar.multiselect("Select Site(s):", options=df['site'].unique(), default=df['site'].unique())
+    
+    # Locale filter updates based on Site selection
+    available_locales = df[df['site'].isin(selected_site)]['locale'].unique()
+    selected_locale = st.sidebar.multiselect("Select Locale(s):", options=available_locales, default=available_locales)
+    
+    # Workflow filter updates based on Locale selection
+    available_wfs = df[df['locale'].isin(selected_locale)]['workflow'].unique()
+    selected_wf = st.sidebar.selectbox("Benchmark Specific Workflow:", options=["All Workflows"] + list(available_wfs))
+
+    # Apply Filters to the Data
+    filtered_df = df[(df['site'].isin(selected_site)) & (df['locale'].isin(selected_locale))]
+    if selected_wf != "All Workflows":
+        filtered_df = filtered_df[filtered_df['workflow'] == selected_wf]
+
+    # 3. THE CALCULATION ENGINE
     def get_trimmed_mean(group):
         if len(group) < 3: return group.median()
         return group[group <= group.quantile(0.95)].mean()
 
-    # Actual AHT per Site/Workflow
-    site_wf_performance = df.groupby(['site', 'workflow'])['aht'].apply(get_trimmed_mean).reset_index()
-    network_goals = df.groupby('workflow')['aht'].apply(get_trimmed_mean).to_dict()
-
-    # 3. GLOBAL CAPACITY SUMMARY
-    site_stats = []
-    for site in df['site'].unique():
-        s_df = df[df['site'] == site]
-        total_work_hours = 0
-        total_units = s_df['units'].sum()
-
-        for wf in s_df['workflow'].unique():
-            actual_aht = site_wf_performance[(site_wf_performance['site'] == site) & (site_wf_performance['workflow'] == wf)]['aht'].values[0]
-            units = s_df[s_df['workflow'] == wf]['units'].sum()
-            total_work_hours += (units * actual_aht) / 3600
-
-        capacity = qas_per_site * prod_hours * 5
-        utilization = (total_work_hours / capacity) * 100
-        
-        site_stats.append({
-            "Site": site,
-            "Units": int(total_units),
-            "Utilization %": round(utilization, 1),
-            "Spare Man-Days": round((capacity - total_work_hours) / prod_hours, 1)
-        })
-
-    # --- UI LAYOUT ---
-    st.subheader("🌐 Global Site Comparison")
-    summary_df = pd.DataFrame(site_stats)
-    st.dataframe(summary_df, use_container_width=True)
+    # Metrics
+    site_wf_perf = filtered_df.groupby(['locale', 'workflow'])['aht'].apply(get_trimmed_mean).reset_index()
+    
+    # 4. DASHBOARD UI
+    # Top Row: Key Metrics
+    total_units = filtered_df['units'].sum()
+    avg_aht = filtered_df['aht'].mean()
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Filtered Units", f"{int(total_units):,}")
+    c2.metric("Avg AHT (Filtered)", f"{avg_aht:.1f}s")
+    c3.metric("Active Locales", len(filtered_df['locale'].unique()))
 
     st.divider()
 
-    # --- TASK COMPARISON VIEW ---
-    st.subheader("🔍 Workflow Deep-Dive (Task Comparison)")
-    target_wf = st.selectbox("Select Workflow to Compare across Sites:", df['workflow'].unique())
+    # Left Column: Table | Right Column: Chart
+    col_left, col_right = st.columns([1, 1])
 
-    wf_comparison = site_wf_performance[site_wf_performance['workflow'] == target_wf]
-    
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.write(f"**AHT Comparison for {target_wf}**")
-        # Using Streamlit's native bar chart (No Matplotlib needed!)
-        st.bar_chart(wf_comparison.set_index('site')['aht'])
-    with col_b:
-        st.write("**Performance Data**")
-        st.table(wf_comparison[['site', 'aht']].rename(columns={'aht': 'Cleaned AHT (s)'}))
+    with col_left:
+        st.subheader("📋 Performance Leaderboard")
+        # Ranking locales by their average AHT for the selected view
+        leaderboard = site_wf_perf.groupby('locale')['aht'].mean().sort_values().reset_index()
+        leaderboard.columns = ['Locale', 'Avg Trimmed AHT (s)']
+        st.table(leaderboard)
+
+    with col_right:
+        st.subheader("📈 Cross-Locale Benchmarking")
+        chart_data = site_wf_perf.groupby('locale')['aht'].mean()
+        st.bar_chart(chart_data)
+
+    # 5. LOAD BALANCING INSIGHT
+    st.divider()
+    st.subheader("💡 Strategic Recommendation")
+    if selected_wf != "All Workflows":
+        best_locale = leaderboard['Locale'].iloc[0]
+        st.success(f"For **{selected_wf}**, the most efficient locale is **{best_locale}**. Consider routing overflow volume here to maximize throughput.")
+    else:
+        st.info("Select a specific workflow in the sidebar to see detailed routing recommendations.")
 
 else:
-    st.info("Upload your Mercury CSV to see the Global Efficiency Dashboard.")
+    st.info("Please upload your Mercury CSV to begin.")
