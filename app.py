@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Weekly Capacity Planner", layout="wide")
 
-st.title("🔮 Strategic Capacity Planner (Mon-Fri)")
+st.title("📊 Strategic Capacity Planner")
 st.markdown(f"### Reporting Date: **{datetime.now().strftime('%A, %b %d, 2026')}**")
 
 # --- SIDEBAR: GLOBAL CONTROLS ---
