@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategic Capacity Planner", layout="wide")
 
-st.title("📊 Strategic Capacity Planner (Exact Site Sync)")
+st.title("📊 Strategic Capacity Planner (Raw Growth Sync)")
 
 # --- SIDEBAR: GLOBAL CONTROLS ---
 st.sidebar.header("⚙️ Global Settings")
@@ -39,7 +39,7 @@ if uploaded_file:
     df['units'] = pd.to_numeric(raw_df.iloc[:, idx_units], errors='coerce').fillna(0)
     df['aht'] = pd.to_numeric(raw_df.iloc[:, idx_aht], errors='coerce').fillna(0)
 
-    # 3. LOCALE LEVEL GROWTH MAP
+    # 3. LOCALE LEVEL GROWTH MAP (Unfiltered)
     growth_map = {}
     unique_weeks = sorted(df['date_part'].unique())
     num_weeks_in_data = len(unique_weeks) if len(unique_weeks) > 0 else 1
@@ -48,30 +48,32 @@ if uploaded_file:
         loc_trend = group.groupby('date_part')['units'].sum().reset_index()
         u = loc_trend['units'].values
         if len(u) > 1:
+            # Manual diff to capture every single jump exactly
             diffs = [(u[i] - u[i-1]) / u[i-1] for i in range(1, len(u)) if u[i-1] != 0]
-            growth_map[(s, l)] = max(0, np.median(diffs)) if diffs else 0
+            # REMOVED max(0, ...) so we can see negative trends if they exist
+            growth_map[(s, l)] = np.median(diffs) if diffs else 0
         else:
             growth_map[(s, l)] = 0
 
-    # --- UPDATED SIDEBAR: CALCULATION ON TOTAL SITE VOLUME ---
+    # --- SIDEBAR: SITE TOTAL VOLUME GROWTH ---
     st.sidebar.divider()
     all_sites = sorted(df['site'].unique())
     selected_sites = st.sidebar.multiselect("Filter Site:", all_sites, default=all_sites)
     
     if selected_sites:
-        # Step 1: Group entire site volume by week
         site_data = df[df['site'].isin(selected_sites)]
+        # Sum total volume for the selected sites per week
         site_weekly_total = site_data.groupby('date_part')['units'].sum().reset_index()
         site_u = site_weekly_total['units'].values
         
         if len(site_u) > 1:
-            # Step 2: Calculate median growth on the TOTAL site volume
             site_diffs = [(site_u[i] - site_u[i-1]) / site_u[i-1] for i in range(1, len(site_u)) if site_u[i-1] != 0]
-            site_median_growth = max(0, np.median(site_diffs))
+            # Calculating raw Median
+            site_raw_median = np.median(site_diffs) if site_diffs else 0
         else:
-            site_median_growth = 0
+            site_raw_median = 0
             
-        st.sidebar.metric(label="📈 Estimated Growth (Selected)", value=f"{site_median_growth * 100:.2f}%")
+        st.sidebar.metric(label="📈 Estimated Growth (Selected)", value=f"{site_raw_median * 100:.2f}%")
     
     st.sidebar.divider()
     
@@ -96,12 +98,6 @@ if uploaded_file:
         loc_summary['Cleaned AHT (s)'] = loc_summary['aht'].map(lambda x: f"{x:.1f}")
         st.dataframe(loc_summary[['site', 'locale', 'Cleaned AHT (s)', 'Avg Weekly Units', 'Est. Growth %']], use_container_width=True, hide_index=True)
 
-        st.markdown("### 🛠️ Transformation Type Breakdown")
-        wf_summary = f_df.groupby(['site', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
-        wf_summary['Total Units'] = wf_summary['units'].astype(int).astype(str)
-        wf_summary['Cleaned AHT (s)'] = wf_summary['aht'].map(lambda x: f"{x:.1f}")
-        st.dataframe(wf_summary.rename(columns={'workflow': 'Transformation Type'})[['site', 'Transformation Type', 'Cleaned AHT (s)', 'Total Units']], use_container_width=True, hide_index=True)
-
     with tab2:
         st.subheader("Future Forecast Explorer")
         week_labels = [f"Week {i+1}: {(current_monday + timedelta(weeks=i)).strftime('%d %b')} - {(current_monday + timedelta(weeks=i, days=4)).strftime('%d %b')}" for i in range(4)]
@@ -112,6 +108,7 @@ if uploaded_file:
         for (site, loc), loc_data in f_df.groupby(['site', 'locale']):
             loc_growth = growth_map.get((site, loc), 0)
             base_units = loc_data['units'].sum() / num_weeks_in_data
+            # Applying raw growth (can be positive or negative)
             pred_vol = base_units * (1 + (loc_growth * week_idx))
             
             aht_val = get_trimmed_mean(loc_data['aht'])
@@ -120,7 +117,7 @@ if uploaded_file:
             
             forecast_results.append({
                 "Site": site, "Locale": loc, "Est. Growth %": f"{loc_growth*100:.2f}%", 
-                "Exp. Volume": str(int(pred_vol)), 
+                "Exp. Volume": str(int(max(0, pred_vol))), 
                 "Utilization %": f"{(req_hours / (qas_per_site * prod_hours * 5)) * 100 if qas_per_site > 0 else 0:.1f}%",
                 "HC Needed": f"{hc_needed:.1f}", "Surplus/Deficit": f"{qas_per_site - hc_needed:.1f}"
             })
