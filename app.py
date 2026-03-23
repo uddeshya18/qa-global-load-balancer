@@ -6,13 +6,12 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategic Capacity Planner", layout="wide")
 
-st.title("📊 Strategic Capacity Planner (Manual Sync Edition)")
+st.title("📊 Strategic Capacity Planner (Full Transformation Sync)")
 
 # --- SIDEBAR: GLOBAL CONTROLS ---
 st.sidebar.header("⚙️ Global Settings")
 uploaded_file = st.sidebar.file_uploader("Upload Mercury CSV", type="csv")
 
-# User Inputs for Staffing Calculation
 qas_per_site = st.sidebar.number_input("Current QAs per Locale", min_value=1, value=10)
 prod_hours = st.sidebar.slider("Daily Productive Hours", 5.0, 9.0, 7.5)
 
@@ -29,7 +28,6 @@ if uploaded_file:
     df = pd.DataFrame()
     cols = [str(c).lower() for c in raw_df.columns]
     
-    # Helper to find column indices based on common Mercury names
     idx_site = next((i for i, c in enumerate(cols) if "site" in c), 0)
     idx_locale = next((i for i, c in enumerate(cols) if "locale" in c or "language" in c), 1)
     idx_wf = next((i for i, c in enumerate(cols) if "workflow" in c or "transformation" in c), 3)
@@ -44,14 +42,13 @@ if uploaded_file:
     df['units'] = pd.to_numeric(raw_df.iloc[:, idx_units], errors='coerce').fillna(0)
     df['aht'] = pd.to_numeric(raw_df.iloc[:, idx_aht], errors='coerce').fillna(0)
 
-    # 3. SITE SELECTION & GROWTH CALCULATION (THE 8.59% LOGIC)
+    # 3. GROWTH CALCULATION (SYNCED TO YOUR 8.59% LOGIC)
     all_sites = sorted(df['site'].unique())
     selected_sites = st.sidebar.multiselect("Filter Site:", all_sites, default=all_sites)
     
     site_growth_val = 0.0
     if selected_sites:
         site_data = df[df['site'].isin(selected_sites)]
-        # Aggregate by week across the whole site
         site_weekly = site_data.groupby('date_part')['units'].sum().reset_index().sort_values('date_part')
         u = site_weekly['units'].values
         
@@ -60,7 +57,6 @@ if uploaded_file:
             for i in range(1, len(u)):
                 if u[i-1] > 0:
                     raw_change = (u[i] - u[i-1]) / u[i-1]
-                    # THE SYNC RULES: Cap at 20%, Floor at 0%
                     capped_change = min(max(0, raw_change), 0.20)
                     diffs.append(capped_change)
             site_growth_val = np.mean(diffs) if diffs else 0.0
@@ -68,7 +64,7 @@ if uploaded_file:
     st.sidebar.metric(label="📈 Estimated Growth (Selected)", value=f"{site_growth_val * 100:.2f}%")
     st.sidebar.divider()
 
-    # 4. DATA FILTERING
+    # 4. FILTERING
     f_df = df[df['site'].isin(selected_sites)]
     all_locales = sorted(f_df['locale'].unique())
     selected_locales = st.sidebar.multiselect("Filter Locale:", all_locales, default=all_locales)
@@ -84,15 +80,19 @@ if uploaded_file:
 
     with tab1:
         st.subheader("Historical Verification")
-        # Weekly Unit breakdown table to confirm manual math
-        weekly_v = f_df.groupby('date_part')['units'].sum().reset_index()
-        weekly_v.columns = ['Week Starting', 'Total Site Units']
-        st.table(weekly_v)
-
+        
+        # Site Summary
         loc_summary = f_df.groupby(['site', 'locale']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
         loc_summary['Avg Weekly Units'] = (loc_summary['units'] / num_weeks_in_data).astype(int)
         loc_summary['Cleaned AHT (s)'] = loc_summary['aht'].map(lambda x: f"{x:.1f}")
         st.dataframe(loc_summary[['site', 'locale', 'Cleaned AHT (s)', 'Avg Weekly Units']], use_container_width=True, hide_index=True)
+
+        # Transformation Breakdown (Tab 1)
+        st.markdown("### 🛠️ Transformation Type Breakdown (Historical)")
+        wf_summary = f_df.groupby(['site', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
+        wf_summary['Avg Weekly Units'] = (wf_summary['units'] / num_weeks_in_data).astype(int)
+        wf_summary['Cleaned AHT (s)'] = wf_summary['aht'].map(lambda x: f"{x:.1f}")
+        st.dataframe(wf_summary.rename(columns={'workflow': 'Transformation Type'})[['site', 'Transformation Type', 'Cleaned AHT (s)', 'Avg Weekly Units']], use_container_width=True, hide_index=True)
 
     with tab2:
         st.subheader("Future Forecast Explorer")
@@ -100,23 +100,35 @@ if uploaded_file:
         selected_week = st.selectbox("Select Forecast Week:", week_labels)
         week_idx = week_labels.index(selected_week) + 1
         
+        # Locale Forecast
         forecast_results = []
         for (site, loc), loc_data in f_df.groupby(['site', 'locale']):
             base_units = loc_data['units'].sum() / num_weeks_in_data
-            # We apply the Site-level synced growth
             pred_vol = base_units * (1 + (site_growth_val * week_idx))
-            
             aht_val = get_trimmed_mean(loc_data['aht'])
             req_hours = (pred_vol * aht_val) / 3600
             hc_needed = req_hours / (prod_hours * 5)
             
             forecast_results.append({
-                "Site": site, "Locale": loc, "Est. Growth": f"{site_growth_val*100:.2f}%", 
-                "Exp. Volume": int(pred_vol), 
+                "Site": site, "Locale": loc, "Exp. Volume": int(pred_vol), 
                 "Utilization %": f"{(req_hours / (qas_per_site * prod_hours * 5)) * 100 if qas_per_site > 0 else 0:.1f}%",
                 "HC Needed": f"{hc_needed:.1f}", "Surplus/Deficit": f"{qas_per_site - hc_needed:.1f}"
             })
         st.dataframe(pd.DataFrame(forecast_results), use_container_width=True, hide_index=True)
+
+        # Transformation Forecast (Tab 2)
+        st.markdown("### 🛠️ Predicted Transformation Breakdown")
+        wf_stats = f_df.groupby(['site', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
+        wf_forecast = []
+        for _, row in wf_stats.iterrows():
+            base_wf_units = row['units'] / num_weeks_in_data
+            pred_wf_units = base_wf_units * (1 + (site_growth_val * week_idx))
+            wf_forecast.append({
+                "Site": row['site'], "Transformation": row['workflow'],
+                "Exp. Units": int(pred_wf_units), 
+                "Req. Hours": f"{(pred_wf_units * row['aht']) / 3600:.1f}"
+            })
+        st.dataframe(pd.DataFrame(wf_forecast), use_container_width=True, hide_index=True)
 
 else:
     st.info("Please upload your Mercury CSV to begin.")
