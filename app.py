@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategic Capacity Planner", layout="wide")
 
-st.title("📊 Strategic Capacity Planner (Full Range Forecast)")
+st.title("📊 Strategic Capacity Planner")
 
 # --- SIDEBAR: GLOBAL CONTROLS ---
 st.sidebar.header("⚙️ Global Settings")
