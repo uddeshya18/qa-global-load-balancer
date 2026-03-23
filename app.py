@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategic Capacity Planner", layout="wide")
 
-st.title("📊 Strategic Capacity Planner (Full Visibility)")
+st.title("📊 Strategic Capacity Planner (Clean View)")
 
 # --- SIDEBAR: GLOBAL CONTROLS ---
 st.sidebar.header("⚙️ Global Settings")
@@ -77,22 +77,23 @@ if uploaded_file:
         if len(group) < 3: return group.median()
         return group[group <= group.quantile(0.95)].mean()
 
-    # STYLE FUNCTION: This fixes the "Cut off" issue by aligning everything left
-    def align_left(df_to_style):
-        return df_to_style.style.set_properties(**{'text-align': 'left'}).set_table_styles([dict(selector='th', props=[('text-align', 'left')])])
-
     with tab1:
         st.subheader("Historical Audit")
         
         st.markdown("### 📍 Locale Level Performance")
         loc_summary = f_df.groupby(['site', 'locale']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
-        loc_summary['Avg Weekly Units'] = (loc_summary['units'] / num_weeks_in_data).astype(int)
+        loc_summary['Avg Weekly Units'] = (loc_summary['units'] / num_weeks_in_data).astype(int).astype(str)
         loc_summary['Est. Growth %'] = loc_summary.apply(lambda x: f"{growth_map.get((x['site'], x['locale']), 0)*100:.1f}%", axis=1)
-        st.dataframe(align_left(loc_summary.rename(columns={'aht': 'Cleaned AHT (s)'})), use_container_width=True, hide_index=True)
+        loc_summary['Cleaned AHT (s)'] = loc_summary['aht'].map(lambda x: f"{x:.1f}")
+        
+        # Displaying only needed columns as strings for left-alignment
+        st.dataframe(loc_summary[['site', 'locale', 'Cleaned AHT (s)', 'Avg Weekly Units', 'Est. Growth %']], use_container_width=True, hide_index=True)
 
         st.markdown("### 🛠️ Transformation Type Breakdown")
         wf_summary = f_df.groupby(['site', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
-        st.dataframe(align_left(wf_summary.rename(columns={'workflow': 'Transformation Type', 'aht': 'Cleaned AHT (s)'})), use_container_width=True, hide_index=True)
+        wf_summary['Total Units'] = wf_summary['units'].astype(int).astype(str)
+        wf_summary['Cleaned AHT (s)'] = wf_summary['aht'].map(lambda x: f"{x:.1f}")
+        st.dataframe(wf_summary[['site', 'workflow', 'Cleaned AHT (s)', 'Total Units']], use_container_width=True, hide_index=True)
 
     with tab2:
         st.subheader("Future Forecast Explorer")
@@ -110,25 +111,17 @@ if uploaded_file:
             aht_val = get_trimmed_mean(loc_data['aht'])
             req_hours = (pred_vol * aht_val) / 3600
             hc_needed = req_hours / (prod_hours * 5)
+            
+            # Convert all to strings to lock formatting and alignment
             forecast_results.append({
-                "Site": site, "Locale": loc, "Est. Growth %": f"{loc_growth*100:.1f}%", 
-                "Exp. Volume": int(pred_vol), "Utilization %": f"{(req_hours / (qas_per_site * prod_hours * 5)) * 100 if qas_per_site > 0 else 0:.1f}%",
-                "HC Needed": round(hc_needed, 1), "Surplus/Deficit": round(qas_per_site - hc_needed, 1)
+                "Site": site, "Locale": loc, 
+                "Est. Growth %": f"{loc_growth*100:.1f}%", 
+                "Exp. Volume": str(int(pred_vol)), 
+                "Utilization %": f"{(req_hours / (qas_per_site * prod_hours * 5)) * 100 if qas_per_site > 0 else 0:.1f}%",
+                "HC Needed": f"{hc_needed:.1f}", 
+                "Surplus/Deficit": f"{qas_per_site - hc_needed:.1f}"
             })
-        st.dataframe(align_left(pd.DataFrame(forecast_results)), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(forecast_results), use_container_width=True, hide_index=True)
 
         st.markdown("### 🛠️ Predicted Transformation Breakdown")
-        wf_stats = f_df.groupby(['site', 'locale', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
-        wf_forecast = []
-        for _, row in wf_stats.iterrows():
-            loc_growth = growth_map.get((row['site'], row['locale']), 0)
-            base_wf_units = row['units'] / num_weeks_in_data
-            pred_wf_units = base_wf_units * ((1 + loc_growth) ** week_idx)
-            wf_forecast.append({
-                "Site": row['site'], "Locale": row['locale'], "Transformation": row['workflow'],
-                "Est. Growth %": f"{loc_growth*100:.1f}%", "Exp. Units": int(pred_wf_units), "Req. Hours": round((pred_wf_units * row['aht']) / 3600, 1)
-            })
-        st.dataframe(align_left(pd.DataFrame(wf_forecast)), use_container_width=True, hide_index=True)
-
-else:
-    st.info("Upload Mercury CSV to activate.")
+        wf_stats = f_df.groupby
