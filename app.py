@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategic Capacity Planner", layout="wide")
 
-st.title("📊 Strategic Capacity Planner (Full Transformation Sync)")
+st.title("📊 Strategic Capacity Planner (Full Range Forecast)")
 
 # --- SIDEBAR: GLOBAL CONTROLS ---
 st.sidebar.header("⚙️ Global Settings")
@@ -30,7 +30,7 @@ if uploaded_file:
     
     idx_site = next((i for i, c in enumerate(cols) if "site" in c), 0)
     idx_locale = next((i for i, c in enumerate(cols) if "locale" in c or "language" in c), 1)
-    idx_wf = next((i for i, c in enumerate(cols) if "workflow" in c or "transformation" in c), 3)
+    idx_wf = next((i for i, c in enumerate(cols) if "workflow" in c or "transformation" in c or "type" in c), 3)
     idx_date = next((i for i, c in enumerate(cols) if "date" in c), 9)
     idx_units = next((i for i, c in enumerate(cols) if "processed units" in c), 13)
     idx_aht = next((i for i, c in enumerate(cols) if "handle time" in c), 16)
@@ -57,6 +57,7 @@ if uploaded_file:
             for i in range(1, len(u)):
                 if u[i-1] > 0:
                     raw_change = (u[i] - u[i-1]) / u[i-1]
+                    # THE SYNC RULES: Cap at 20%, Floor at 0%
                     capped_change = min(max(0, raw_change), 0.20)
                     diffs.append(capped_change)
             site_growth_val = np.mean(diffs) if diffs else 0.0
@@ -81,13 +82,13 @@ if uploaded_file:
     with tab1:
         st.subheader("Historical Verification")
         
-        # Site Summary
+        # Locale Summary
         loc_summary = f_df.groupby(['site', 'locale']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
         loc_summary['Avg Weekly Units'] = (loc_summary['units'] / num_weeks_in_data).astype(int)
         loc_summary['Cleaned AHT (s)'] = loc_summary['aht'].map(lambda x: f"{x:.1f}")
         st.dataframe(loc_summary[['site', 'locale', 'Cleaned AHT (s)', 'Avg Weekly Units']], use_container_width=True, hide_index=True)
 
-        # Transformation Breakdown (Tab 1)
+        # Transformation Breakdown
         st.markdown("### 🛠️ Transformation Type Breakdown (Historical)")
         wf_summary = f_df.groupby(['site', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
         wf_summary['Avg Weekly Units'] = (wf_summary['units'] / num_weeks_in_data).astype(int)
@@ -96,9 +97,16 @@ if uploaded_file:
 
     with tab2:
         st.subheader("Future Forecast Explorer")
-        week_labels = [f"Week {i+1}: {(current_monday + timedelta(weeks=i)).strftime('%d %b')}" for i in range(4)]
-        selected_week = st.selectbox("Select Forecast Week:", week_labels)
-        week_idx = week_labels.index(selected_week) + 1
+        
+        # UPDATED: Week Range Selection Logic
+        week_options = []
+        for i in range(4):
+            start = current_monday + timedelta(weeks=i)
+            end = start + timedelta(days=4)
+            week_options.append(f"Week {i+1}: {start.strftime('%d %b')} - {end.strftime('%d %b')}")
+        
+        selected_week = st.selectbox("Select Forecast Week Range:", week_options)
+        week_idx = week_options.index(selected_week) + 1
         
         # Locale Forecast
         forecast_results = []
@@ -116,7 +124,7 @@ if uploaded_file:
             })
         st.dataframe(pd.DataFrame(forecast_results), use_container_width=True, hide_index=True)
 
-        # Transformation Forecast (Tab 2)
+        # Transformation Forecast
         st.markdown("### 🛠️ Predicted Transformation Breakdown")
         wf_stats = f_df.groupby(['site', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
         wf_forecast = []
