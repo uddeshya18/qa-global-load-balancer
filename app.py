@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategic Capacity Planner", layout="wide")
 
-st.title("📊 Strategic Capacity Planner (Verified Growth)")
+st.title("📊 Strategic Capacity Planner (Manual Sync Edition)")
 
 # --- SIDEBAR: GLOBAL CONTROLS ---
 st.sidebar.header("⚙️ Global Settings")
@@ -39,7 +39,7 @@ if uploaded_file:
     df['units'] = pd.to_numeric(raw_df.iloc[:, idx_units], errors='coerce').fillna(0)
     df['aht'] = pd.to_numeric(raw_df.iloc[:, idx_aht], errors='coerce').fillna(0)
 
-    # 3. CALCULATE GROWTH (Weighted Logic to stop 112% errors)
+    # 3. CALCULATE GROWTH (Synced to Manual Median Logic)
     growth_map = {}
     unique_weeks = sorted(df['date_part'].unique())
     num_weeks_in_data = len(unique_weeks) if len(unique_weeks) > 0 else 1
@@ -49,32 +49,28 @@ if uploaded_file:
         u = loc_trend['units'].values
         
         if len(u) > 1:
-            # We filter out 'noise': Only calculate growth if volume is significant (>10 units)
-            # This stops a jump from 1 to 5 units showing as 400% growth
             diffs = []
             for i in range(1, len(u)):
-                if u[i-1] > 10: # Threshold to ignore low-volume starts
+                if u[i-1] != 0: # Pure math: only avoid division by zero
                     change = (u[i] - u[i-1]) / u[i-1]
                     diffs.append(change)
             
-            # Use Median instead of Mean to ignore one-off "spike" weeks
-            avg_growth = np.median(diffs) if diffs else 0
-            
-            # HARD CAP: Operations rarely grow more than 20% week-over-week
-            # If the math says 112%, we cap it at a realistic 20%
-            growth_map[(s, l)] = min(max(0, avg_growth), 0.20) 
+            # Use Median and allow for higher growth to match your 8.25% result
+            median_growth = np.median(diffs) if diffs else 0
+            growth_map[(s, l)] = max(0, median_growth) # No cap, just floor at 0%
         else:
             growth_map[(s, l)] = 0
 
-    # --- SIDEBAR BOX: ESTIMATED GROWTH ---
+    # --- SIDEBAR BOX: MATCHED GROWTH ---
     st.sidebar.divider()
     all_sites = sorted(df['site'].unique())
     selected_sites = st.sidebar.multiselect("Filter Site:", all_sites, default=all_sites)
     
     if selected_sites:
         relevant_growth = [v for k, v in growth_map.items() if k[0] in selected_sites]
-        avg_growth_display = (sum(relevant_growth) / len(relevant_growth)) * 100 if relevant_growth else 0
-        st.sidebar.metric(label="📈 Estimated Growth (Selected)", value=f"{avg_growth_display:.1f}%")
+        # Calculate Median of growth across selected items
+        site_median_growth = np.median(relevant_growth) * 100 if relevant_growth else 0
+        st.sidebar.metric(label="📈 Estimated Growth (Selected)", value=f"{site_median_growth:.2f}%")
     
     st.sidebar.divider()
     f_df = df[df['site'].isin(selected_sites)]
@@ -93,7 +89,7 @@ if uploaded_file:
         st.subheader("Historical Audit")
         loc_summary = f_df.groupby(['site', 'locale']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
         loc_summary['Avg Weekly Units'] = (loc_summary['units'] / num_weeks_in_data).astype(int).astype(str)
-        loc_summary['Est. Growth %'] = loc_summary.apply(lambda x: f"{growth_map.get((x['site'], x['locale']), 0)*100:.1f}%", axis=1)
+        loc_summary['Est. Growth %'] = loc_summary.apply(lambda x: f"{growth_map.get((x['site'], x['locale']), 0)*100:.2f}%", axis=1)
         loc_summary['Cleaned AHT (s)'] = loc_summary['aht'].map(lambda x: f"{x:.1f}")
         st.dataframe(loc_summary[['site', 'locale', 'Cleaned AHT (s)', 'Avg Weekly Units', 'Est. Growth %']], use_container_width=True, hide_index=True)
 
@@ -120,7 +116,7 @@ if uploaded_file:
             hc_needed = req_hours / (prod_hours * 5)
             
             forecast_results.append({
-                "Site": site, "Locale": loc, "Est. Growth %": f"{loc_growth*100:.1f}%", 
+                "Site": site, "Locale": loc, "Est. Growth %": f"{loc_growth*100:.2f}%", 
                 "Exp. Volume": str(int(pred_vol)), 
                 "Utilization %": f"{(req_hours / (qas_per_site * prod_hours * 5)) * 100 if qas_per_site > 0 else 0:.1f}%",
                 "HC Needed": f"{hc_needed:.1f}", "Surplus/Deficit": f"{qas_per_site - hc_needed:.1f}"
@@ -137,7 +133,7 @@ if uploaded_file:
             
             wf_forecast.append({
                 "Site": row['site'], "Locale": row['locale'], "Transformation": row['workflow'],
-                "Est. Growth %": f"{loc_growth*100:.1f}%", "Exp. Units": str(int(pred_wf_units)), 
+                "Est. Growth %": f"{loc_growth*100:.2f}%", "Exp. Units": str(int(pred_wf_units)), 
                 "Req. Hours": f"{(pred_wf_units * row['aht']) / 3600:.1f}"
             })
         st.dataframe(pd.DataFrame(wf_forecast), use_container_width=True, hide_index=True)
