@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategic Capacity Planner", layout="wide")
 
-st.title("📊 Strategic Capacity Planner (Dynamic Site Growth)")
+st.title("📊 Strategic Capacity Planner (Portal Throughput Edition)")
 
 # --- SIDEBAR: GLOBAL CONTROLS ---
 st.sidebar.header("⚙️ Global Settings")
@@ -39,23 +39,24 @@ if uploaded_file:
     df['units'] = pd.to_numeric(raw_df.iloc[:, idx_units], errors='coerce').fillna(0)
     df['aht'] = pd.to_numeric(raw_df.iloc[:, idx_aht], errors='coerce').fillna(0)
 
-    # 3. CALCULATE GROWTH PER SITE/LOCALE
+    # 3. CALCULATE GROWTH (Arithmetic Average for Portal Logic)
     growth_map = {}
     unique_weeks = sorted(df['date_part'].unique())
     num_weeks_in_data = len(unique_weeks) if len(unique_weeks) > 0 else 1
 
     for (s, l), group in df.groupby(['site', 'locale']):
+        # Sum units per week for this specific locale
         loc_trend = group.groupby('date_part')['units'].sum().reset_index()
         if len(loc_trend) > 1:
-            first = loc_trend.iloc[0]['units']
-            last = loc_trend.iloc[-1]['units']
-            # Compound Weekly Growth Rate logic
-            rate = ((last / first) ** (1 / len(loc_trend))) - 1 if first > 0 else 0
-            growth_map[(s, l)] = max(0, rate) 
+            # Formula: (W2-W1)/W1 ... averaged across all weeks
+            # This captures how much your team's clearing speed is actually changing
+            weekly_changes = loc_trend['units'].pct_change().dropna()
+            avg_periodic_growth = weekly_changes.mean()
+            growth_map[(s, l)] = max(0, avg_periodic_growth) 
         else:
             growth_map[(s, l)] = 0
 
-    # --- NEW SIDEBAR BOX: ESTIMATED GROWTH ---
+    # --- SIDEBAR BOX: ESTIMATED GROWTH ---
     st.sidebar.divider()
     all_sites = sorted(df['site'].unique())
     selected_sites = st.sidebar.multiselect("Filter Site:", all_sites, default=all_sites)
@@ -81,11 +82,10 @@ if uploaded_file:
         return group[group <= group.quantile(0.95)].mean()
 
     with tab1:
-        st.subheader("Historical Audit")
+        st.subheader("Historical Audit (Portal Clearing Speed)")
         
         st.markdown("### 📍 Locale Level Performance")
         loc_summary = f_df.groupby(['site', 'locale']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
-        # Cleaned formatting for Table display
         loc_summary['Avg Weekly Units'] = (loc_summary['units'] / num_weeks_in_data).astype(int).astype(str)
         loc_summary['Est. Growth %'] = loc_summary.apply(lambda x: f"{growth_map.get((x['site'], x['locale']), 0)*100:.1f}%", axis=1)
         loc_summary['Cleaned AHT (s)'] = loc_summary['aht'].map(lambda x: f"{x:.1f}")
@@ -111,7 +111,8 @@ if uploaded_file:
         for (site, loc), loc_data in f_df.groupby(['site', 'locale']):
             loc_growth = growth_map.get((site, loc), 0)
             base_units = loc_data['units'].sum() / num_weeks_in_data
-            pred_vol = base_units * ((1 + loc_growth) ** week_idx)
+            # Applying Arithmetic Growth per Forecast Week
+            pred_vol = base_units * (1 + (loc_growth * week_idx))
             aht_val = get_trimmed_mean(loc_data['aht'])
             req_hours = (pred_vol * aht_val) / 3600
             hc_needed = req_hours / (prod_hours * 5)
@@ -133,7 +134,7 @@ if uploaded_file:
         for _, row in wf_stats.iterrows():
             loc_growth = growth_map.get((row['site'], row['locale']), 0)
             base_wf_units = row['units'] / num_weeks_in_data
-            pred_wf_units = base_wf_units * ((1 + loc_growth) ** week_idx)
+            pred_wf_units = base_wf_units * (1 + (loc_growth * week_idx))
             
             wf_forecast.append({
                 "Site": row['site'], 
