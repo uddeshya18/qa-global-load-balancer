@@ -24,11 +24,11 @@ if uploaded_file:
     # 1. LOAD DATA
     raw_df = pd.read_csv(uploaded_file, sep=None, engine='python')
     
-    # 2. COLUMN MAPPING (Positional for Mercury)
+    # 2. COLUMN MAPPING
     df = pd.DataFrame()
     df['site'] = raw_df.iloc[:, 0].astype(str).str.strip().str.upper()
     df['locale'] = raw_df.iloc[:, 1].astype(str).str.strip()
-    df['workflow'] = raw_df.iloc[:, 3].astype(str).str.strip() # Column-4
+    df['workflow'] = raw_df.iloc[:, 3].astype(str).str.strip() 
     
     cols = [str(c).lower() for c in raw_df.columns]
     idx_date = next((i for i, c in enumerate(cols) if "date" in c), 9)
@@ -39,20 +39,24 @@ if uploaded_file:
     df['units'] = pd.to_numeric(raw_df.iloc[:, idx_units], errors='coerce').fillna(0)
     df['aht'] = pd.to_numeric(raw_df.iloc[:, idx_aht], errors='coerce').fillna(0)
 
-    # 3. CALCULATE GROWTH (Arithmetic Average for Portal Logic)
+    # 3. CALCULATE GROWTH (With Safety Guards)
     growth_map = {}
     unique_weeks = sorted(df['date_part'].unique())
     num_weeks_in_data = len(unique_weeks) if len(unique_weeks) > 0 else 1
 
     for (s, l), group in df.groupby(['site', 'locale']):
-        # Sum units per week for this specific locale
         loc_trend = group.groupby('date_part')['units'].sum().reset_index()
         if len(loc_trend) > 1:
-            # Formula: (W2-W1)/W1 ... averaged across all weeks
-            # This captures how much your team's clearing speed is actually changing
-            weekly_changes = loc_trend['units'].pct_change().dropna()
-            avg_periodic_growth = weekly_changes.mean()
-            growth_map[(s, l)] = max(0, avg_periodic_growth) 
+            # Replaced pct_change with a manual calculation to handle zeros/jumps safely
+            u = loc_trend['units'].values
+            diffs = []
+            for i in range(1, len(u)):
+                if u[i-1] > 0:
+                    diffs.append((u[i] - u[i-1]) / u[i-1])
+            
+            # Use mean if we have diffs, otherwise 0. Cap at 500% to prevent Overflow
+            avg_periodic_growth = np.mean(diffs) if diffs else 0
+            growth_map[(s, l)] = min(max(0, avg_periodic_growth), 5.0) 
         else:
             growth_map[(s, l)] = 0
 
@@ -67,8 +71,6 @@ if uploaded_file:
         st.sidebar.metric(label="📈 Estimated Growth (Selected)", value=f"{avg_growth:.1f}%")
     
     st.sidebar.divider()
-    
-    # 4. REMAINING FILTERS
     f_df = df[df['site'].isin(selected_sites)]
     all_locales = sorted(f_df['locale'].unique())
     selected_locales = st.sidebar.multiselect("Filter Locale:", all_locales, default=all_locales)
@@ -82,49 +84,44 @@ if uploaded_file:
         return group[group <= group.quantile(0.95)].mean()
 
     with tab1:
-        st.subheader("Historical Audit (Portal Clearing Speed)")
-        
-        st.markdown("### 📍 Locale Level Performance")
+        st.subheader("Historical Audit")
         loc_summary = f_df.groupby(['site', 'locale']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
         loc_summary['Avg Weekly Units'] = (loc_summary['units'] / num_weeks_in_data).astype(int).astype(str)
         loc_summary['Est. Growth %'] = loc_summary.apply(lambda x: f"{growth_map.get((x['site'], x['locale']), 0)*100:.1f}%", axis=1)
         loc_summary['Cleaned AHT (s)'] = loc_summary['aht'].map(lambda x: f"{x:.1f}")
-        
         st.dataframe(loc_summary[['site', 'locale', 'Cleaned AHT (s)', 'Avg Weekly Units', 'Est. Growth %']], use_container_width=True, hide_index=True)
 
         st.markdown("### 🛠️ Transformation Type Breakdown")
         wf_summary = f_df.groupby(['site', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
         wf_summary['Total Units'] = wf_summary['units'].astype(int).astype(str)
         wf_summary['Cleaned AHT (s)'] = wf_summary['aht'].map(lambda x: f"{x:.1f}")
-        
         st.dataframe(wf_summary.rename(columns={'workflow': 'Transformation Type'})[['site', 'Transformation Type', 'Cleaned AHT (s)', 'Total Units']], use_container_width=True, hide_index=True)
 
     with tab2:
         st.subheader("Future Forecast Explorer")
-        
         week_labels = [f"Week {i+1}: {(current_monday + timedelta(weeks=i)).strftime('%d %b')} - {(current_monday + timedelta(weeks=i, days=4)).strftime('%d %b')}" for i in range(4)]
         selected_week = st.selectbox("Select Forecast Week:", week_labels)
         week_idx = week_labels.index(selected_week) + 1
         
-        st.markdown("### 📍 Predicted Staffing Status")
         forecast_results = []
         for (site, loc), loc_data in f_df.groupby(['site', 'locale']):
             loc_growth = growth_map.get((site, loc), 0)
             base_units = loc_data['units'].sum() / num_weeks_in_data
-            # Applying Arithmetic Growth per Forecast Week
+            # Linear projection to avoid exponential overflow
             pred_vol = base_units * (1 + (loc_growth * week_idx))
+            
+            # FINAL SAFETY CHECK: Ensure pred_vol is a valid finite number
+            if not np.isfinite(pred_vol): pred_vol = base_units
+                
             aht_val = get_trimmed_mean(loc_data['aht'])
             req_hours = (pred_vol * aht_val) / 3600
             hc_needed = req_hours / (prod_hours * 5)
             
             forecast_results.append({
-                "Site": site, 
-                "Locale": loc, 
-                "Est. Growth %": f"{loc_growth*100:.1f}%", 
+                "Site": site, "Locale": loc, "Est. Growth %": f"{loc_growth*100:.1f}%", 
                 "Exp. Volume": str(int(pred_vol)), 
                 "Utilization %": f"{(req_hours / (qas_per_site * prod_hours * 5)) * 100 if qas_per_site > 0 else 0:.1f}%",
-                "HC Needed": f"{hc_needed:.1f}", 
-                "Surplus/Deficit": f"{qas_per_site - hc_needed:.1f}"
+                "HC Needed": f"{hc_needed:.1f}", "Surplus/Deficit": f"{qas_per_site - hc_needed:.1f}"
             })
         st.dataframe(pd.DataFrame(forecast_results), use_container_width=True, hide_index=True)
 
@@ -136,12 +133,11 @@ if uploaded_file:
             base_wf_units = row['units'] / num_weeks_in_data
             pred_wf_units = base_wf_units * (1 + (loc_growth * week_idx))
             
+            if not np.isfinite(pred_wf_units): pred_wf_units = base_wf_units
+
             wf_forecast.append({
-                "Site": row['site'], 
-                "Locale": row['locale'], 
-                "Transformation": row['workflow'],
-                "Est. Growth %": f"{loc_growth*100:.1f}%", 
-                "Exp. Units": str(int(pred_wf_units)), 
+                "Site": row['site'], "Locale": row['locale'], "Transformation": row['workflow'],
+                "Est. Growth %": f"{loc_growth*100:.1f}%", "Exp. Units": str(int(pred_wf_units)), 
                 "Req. Hours": f"{(pred_wf_units * row['aht']) / 3600:.1f}"
             })
         st.dataframe(pd.DataFrame(wf_forecast), use_container_width=True, hide_index=True)
