@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategic Capacity Planner", layout="wide")
 
-st.title("📊 Strategic Capacity Planner (Portal Throughput Edition)")
+st.title("📊 Strategic Capacity Planner (Verified Growth)")
 
 # --- SIDEBAR: GLOBAL CONTROLS ---
 st.sidebar.header("⚙️ Global Settings")
@@ -39,24 +39,30 @@ if uploaded_file:
     df['units'] = pd.to_numeric(raw_df.iloc[:, idx_units], errors='coerce').fillna(0)
     df['aht'] = pd.to_numeric(raw_df.iloc[:, idx_aht], errors='coerce').fillna(0)
 
-    # 3. CALCULATE GROWTH (With Safety Guards)
+    # 3. CALCULATE GROWTH (Weighted Logic to stop 112% errors)
     growth_map = {}
     unique_weeks = sorted(df['date_part'].unique())
     num_weeks_in_data = len(unique_weeks) if len(unique_weeks) > 0 else 1
 
     for (s, l), group in df.groupby(['site', 'locale']):
         loc_trend = group.groupby('date_part')['units'].sum().reset_index()
-        if len(loc_trend) > 1:
-            # Replaced pct_change with a manual calculation to handle zeros/jumps safely
-            u = loc_trend['units'].values
+        u = loc_trend['units'].values
+        
+        if len(u) > 1:
+            # We filter out 'noise': Only calculate growth if volume is significant (>10 units)
+            # This stops a jump from 1 to 5 units showing as 400% growth
             diffs = []
             for i in range(1, len(u)):
-                if u[i-1] > 0:
-                    diffs.append((u[i] - u[i-1]) / u[i-1])
+                if u[i-1] > 10: # Threshold to ignore low-volume starts
+                    change = (u[i] - u[i-1]) / u[i-1]
+                    diffs.append(change)
             
-            # Use mean if we have diffs, otherwise 0. Cap at 500% to prevent Overflow
-            avg_periodic_growth = np.mean(diffs) if diffs else 0
-            growth_map[(s, l)] = min(max(0, avg_periodic_growth), 5.0) 
+            # Use Median instead of Mean to ignore one-off "spike" weeks
+            avg_growth = np.median(diffs) if diffs else 0
+            
+            # HARD CAP: Operations rarely grow more than 20% week-over-week
+            # If the math says 112%, we cap it at a realistic 20%
+            growth_map[(s, l)] = min(max(0, avg_growth), 0.20) 
         else:
             growth_map[(s, l)] = 0
 
@@ -67,8 +73,8 @@ if uploaded_file:
     
     if selected_sites:
         relevant_growth = [v for k, v in growth_map.items() if k[0] in selected_sites]
-        avg_growth = (sum(relevant_growth) / len(relevant_growth)) * 100 if relevant_growth else 0
-        st.sidebar.metric(label="📈 Estimated Growth (Selected)", value=f"{avg_growth:.1f}%")
+        avg_growth_display = (sum(relevant_growth) / len(relevant_growth)) * 100 if relevant_growth else 0
+        st.sidebar.metric(label="📈 Estimated Growth (Selected)", value=f"{avg_growth_display:.1f}%")
     
     st.sidebar.divider()
     f_df = df[df['site'].isin(selected_sites)]
@@ -107,12 +113,8 @@ if uploaded_file:
         for (site, loc), loc_data in f_df.groupby(['site', 'locale']):
             loc_growth = growth_map.get((site, loc), 0)
             base_units = loc_data['units'].sum() / num_weeks_in_data
-            # Linear projection to avoid exponential overflow
             pred_vol = base_units * (1 + (loc_growth * week_idx))
             
-            # FINAL SAFETY CHECK: Ensure pred_vol is a valid finite number
-            if not np.isfinite(pred_vol): pred_vol = base_units
-                
             aht_val = get_trimmed_mean(loc_data['aht'])
             req_hours = (pred_vol * aht_val) / 3600
             hc_needed = req_hours / (prod_hours * 5)
@@ -133,8 +135,6 @@ if uploaded_file:
             base_wf_units = row['units'] / num_weeks_in_data
             pred_wf_units = base_wf_units * (1 + (loc_growth * week_idx))
             
-            if not np.isfinite(pred_wf_units): pred_wf_units = base_wf_units
-
             wf_forecast.append({
                 "Site": row['site'], "Locale": row['locale'], "Transformation": row['workflow'],
                 "Est. Growth %": f"{loc_growth*100:.1f}%", "Exp. Units": str(int(pred_wf_units)), 
