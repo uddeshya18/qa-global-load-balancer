@@ -24,7 +24,7 @@ if uploaded_file:
     # 1. LOAD DATA
     raw_df = pd.read_csv(uploaded_file, sep=None, engine='python')
     
-    # 2. COLUMN MAPPING
+    # 2. COLUMN MAPPING (Positional for Mercury)
     df = pd.DataFrame()
     df['site'] = raw_df.iloc[:, 0].astype(str).str.strip().str.upper()
     df['locale'] = raw_df.iloc[:, 1].astype(str).str.strip()
@@ -40,28 +40,36 @@ if uploaded_file:
     df['aht'] = pd.to_numeric(raw_df.iloc[:, idx_aht], errors='coerce').fillna(0)
 
     # 3. CALCULATE GROWTH PER SITE/LOCALE
-    # We group by site and locale to find the specific trend for each
     growth_map = {}
     unique_weeks = sorted(df['date_part'].unique())
     num_weeks_in_data = len(unique_weeks) if len(unique_weeks) > 0 else 1
 
-    for key, group in df.groupby(['site', 'locale']):
+    for (s, l), group in df.groupby(['site', 'locale']):
         loc_trend = group.groupby('date_part')['units'].sum().reset_index()
         if len(loc_trend) > 1:
             first = loc_trend.iloc[0]['units']
             last = loc_trend.iloc[-1]['units']
-            # Compound Weekly Growth Rate
             rate = ((last / first) ** (1 / len(loc_trend))) - 1 if first > 0 else 0
-            growth_map[key] = max(0, rate) 
+            growth_map[(s, l)] = max(0, rate) 
         else:
-            growth_map[key] = 0
+            growth_map[(s, l)] = 0
 
-    # 4. FILTERS
-    st.sidebar.subheader("🔍 Filter Data")
+    # --- NEW SIDEBAR BOX: ESTIMATED GROWTH ---
+    st.sidebar.divider()
+    # Filter sites first to get relevant growth
     all_sites = sorted(df['site'].unique())
     selected_sites = st.sidebar.multiselect("Filter Site:", all_sites, default=all_sites)
-    f_df = df[df['site'].isin(selected_sites)]
     
+    # Calculate Average Growth for selected sites
+    if selected_sites:
+        relevant_growth = [v for k, v in growth_map.items() if k[0] in selected_sites]
+        avg_growth = (sum(relevant_growth) / len(relevant_growth)) * 100 if relevant_growth else 0
+        st.sidebar.metric(label="📈 Estimated Growth (Selected)", value=f"{avg_growth:.1f}%")
+    
+    st.sidebar.divider()
+    
+    # 4. REMAINING FILTERS
+    f_df = df[df['site'].isin(selected_sites)]
     all_locales = sorted(f_df['locale'].unique())
     selected_locales = st.sidebar.multiselect("Filter Locale:", all_locales, default=all_locales)
     f_df = f_df[f_df['locale'].isin(selected_locales)]
@@ -74,26 +82,17 @@ if uploaded_file:
         return group[group <= group.quantile(0.95)].mean()
 
     with tab1:
-        st.subheader("Historical Audit (Week-over-Week Trends)")
+        st.subheader("Historical Audit")
         
-        # TABLE 1: SITE & LOCALE SUMMARY
-        st.markdown("### 📍 Site & Locale Performance")
+        st.markdown("### 📍 Locale Level Performance")
         loc_summary = f_df.groupby(['site', 'locale']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
         loc_summary['Avg Weekly Units'] = (loc_summary['units'] / num_weeks_in_data).astype(int)
-        
-        # Apply the calculated growth to the table
         loc_summary['Est. Growth %'] = loc_summary.apply(lambda x: f"{growth_map.get((x['site'], x['locale']), 0)*100:.1f}%", axis=1)
-        
-        st.dataframe(loc_summary.rename(columns={'site': 'Site', 'locale': 'Locale', 'aht': 'Cleaned AHT (s)'}).style.format({'Cleaned AHT (s)': '{:.1f}'}), use_container_width=True, hide_index=True)
+        st.dataframe(loc_summary.rename(columns={'aht': 'Cleaned AHT (s)'}).style.format({'Cleaned AHT (s)': '{:.1f}'}), use_container_width=True, hide_index=True)
 
-        # TABLE 2: TRANSFORMATION TYPE SUMMARY
         st.markdown("### 🛠️ Transformation Type Breakdown")
         wf_summary = f_df.groupby(['site', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
-        wf_summary['Avg Weekly Units'] = (wf_summary['units'] / num_weeks_in_data).astype(int)
-        # Show growth for the site this workflow belongs to
-        wf_summary['Site Growth %'] = wf_summary.apply(lambda x: f"{growth_map.get((x['site'], f_df[f_df['site']==x['site']]['locale'].iloc[0]), 0)*100:.1f}%", axis=1)
-        
-        st.dataframe(wf_summary.rename(columns={'site': 'Site', 'workflow': 'Transformation Type', 'aht': 'Cleaned AHT (s)'}).style.format({'Cleaned AHT (s)': '{:.1f}'}), use_container_width=True, hide_index=True)
+        st.dataframe(wf_summary.rename(columns={'workflow': 'Transformation Type', 'aht': 'Cleaned AHT (s)'}).style.format({'Cleaned AHT (s)': '{:.1f}'}), use_container_width=True, hide_index=True)
 
     with tab2:
         st.subheader("Future Forecast Explorer")
@@ -102,8 +101,7 @@ if uploaded_file:
         selected_week = st.selectbox("Select Forecast Week:", week_labels)
         week_idx = week_labels.index(selected_week) + 1
         
-        # TABLE 3: PREDICTED STAFFING
-        st.markdown("### 📍 Predicted Staffing Status (By Site Growth)")
+        st.markdown("### 📍 Predicted Staffing Status")
         forecast_results = []
         for (site, loc), loc_data in f_df.groupby(['site', 'locale']):
             loc_growth = growth_map.get((site, loc), 0)
@@ -112,7 +110,6 @@ if uploaded_file:
             aht_val = get_trimmed_mean(loc_data['aht'])
             req_hours = (pred_vol * aht_val) / 3600
             hc_needed = req_hours / (prod_hours * 5)
-            
             forecast_results.append({
                 "Site": site, "Locale": loc, "Est. Growth %": f"{loc_growth*100:.1f}%", 
                 "Exp. Volume": int(pred_vol), "Utilization %": (req_hours / (qas_per_site * prod_hours * 5)) * 100 if qas_per_site > 0 else 0,
@@ -120,18 +117,19 @@ if uploaded_file:
             })
         st.dataframe(pd.DataFrame(forecast_results).style.format({'Utilization %': '{:.1f}%', 'HC Needed': '{:.1f}', 'Surplus/Deficit': '{:.1f}'}), use_container_width=True, hide_index=True)
 
-        # TABLE 4: PREDICTED WORKFLOW
         st.markdown("### 🛠️ Predicted Transformation Breakdown")
+        # FIXED ERROR: This section now handles the multi-index correctly
+        wf_stats = f_df.groupby(['site', 'locale', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
         wf_forecast = []
-        for (site, loc, wf), row in f_df.groupby(['site', 'locale', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index().iterrows():
-            loc_growth = growth_map.get((site, loc), 0)
+        for _, row in wf_stats.iterrows():
+            loc_growth = growth_map.get((row['site'], row['locale']), 0)
             base_wf_units = row['units'] / num_weeks_in_data
             pred_wf_units = base_wf_units * ((1 + loc_growth) ** week_idx)
             wf_forecast.append({
-                "Site": site, "Locale": loc, "Transformation Type": wf, 
+                "Site": row['site'], "Locale": row['locale'], "Transformation": row['workflow'],
                 "Est. Growth %": f"{loc_growth*100:.1f}%", "Exp. Units": int(pred_wf_units), "Req. Hours": (pred_wf_units * row['aht']) / 3600
             })
         st.dataframe(pd.DataFrame(wf_forecast).style.format({'Req. Hours': '{:.1f}'}), use_container_width=True, hide_index=True)
 
 else:
-    st.info("Upload Mercury CSV to generate site-specific growth reports.")
+    st.info("Upload Mercury CSV to activate.")
