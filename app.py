@@ -6,14 +6,11 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Strategic Capacity Planner", layout="wide")
 
-st.title("📊 Strategic Capacity Planner (Dual-Growth Mode)")
+st.title("📊 Strategic Capacity Planner (Full Range Forecast)")
 
 # --- SIDEBAR: GLOBAL CONTROLS ---
 st.sidebar.header("⚙️ Global Settings")
 uploaded_file = st.sidebar.file_uploader("Upload Mercury CSV", type="csv")
-
-# NEW: Toggle between Strategic and Raw Growth
-use_raw_growth = st.sidebar.toggle("Use Raw Growth (Uncapped)", value=False, help="Strategic Mode caps growth at 20% and floors at 0%. Raw Mode uses actual math.")
 
 qas_per_site = st.sidebar.number_input("Current QAs per Locale", min_value=1, value=10)
 prod_hours = st.sidebar.slider("Daily Productive Hours", 5.0, 9.0, 7.5)
@@ -45,7 +42,7 @@ if uploaded_file:
     df['units'] = pd.to_numeric(raw_df.iloc[:, idx_units], errors='coerce').fillna(0)
     df['aht'] = pd.to_numeric(raw_df.iloc[:, idx_aht], errors='coerce').fillna(0)
 
-    # 3. GROWTH CALCULATION (SWITCHABLE LOGIC)
+    # 3. GROWTH CALCULATION (SYNCED TO YOUR 8.59% LOGIC)
     all_sites = sorted(df['site'].unique())
     selected_sites = st.sidebar.multiselect("Filter Site:", all_sites, default=all_sites)
     
@@ -60,25 +57,22 @@ if uploaded_file:
             for i in range(1, len(u)):
                 if u[i-1] > 0:
                     raw_change = (u[i] - u[i-1]) / u[i-1]
-                    # THE TOGGLE LOGIC
-                    if use_raw_growth:
-                        diffs.append(raw_change)
-                    else:
-                        capped_change = min(max(0, raw_change), 0.20)
-                        diffs.append(capped_change)
+                    # THE SYNC RULES: Cap at 20%, Floor at 0%
+                    capped_change = min(max(0, raw_change), 0.20)
+                    diffs.append(capped_change)
             site_growth_val = np.mean(diffs) if diffs else 0.0
 
-    mode_label = "Raw" if use_raw_growth else "Strategic"
-    st.sidebar.metric(label=f"📈 {mode_label} Growth", value=f"{site_growth_val * 100:.2f}%")
+    st.sidebar.metric(label="📈 Estimated Growth (Selected)", value=f"{site_growth_val * 100:.2f}%")
     st.sidebar.divider()
 
-    # 4. FILTERING & TABS (Rest of UI stays consistent)
+    # 4. FILTERING
     f_df = df[df['site'].isin(selected_sites)]
     all_locales = sorted(f_df['locale'].unique())
     selected_locales = st.sidebar.multiselect("Filter Locale:", all_locales, default=all_locales)
     f_df = f_df[f_df['locale'].isin(selected_locales)]
     num_weeks_in_data = len(df['date_part'].unique())
 
+    # 5. TABS
     tab1, tab2 = st.tabs(["📊 Historical Audit", "🚀 Future Prediction"])
 
     def get_trimmed_mean(group):
@@ -86,14 +80,25 @@ if uploaded_file:
         return group[group <= group.quantile(0.95)].mean()
 
     with tab1:
-        st.subheader(f"Historical Verification ({mode_label} Mode)")
+        st.subheader("Historical Verification")
+        
+        # Locale Summary
         loc_summary = f_df.groupby(['site', 'locale']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
         loc_summary['Avg Weekly Units'] = (loc_summary['units'] / num_weeks_in_data).astype(int)
         loc_summary['Cleaned AHT (s)'] = loc_summary['aht'].map(lambda x: f"{x:.1f}")
         st.dataframe(loc_summary[['site', 'locale', 'Cleaned AHT (s)', 'Avg Weekly Units']], use_container_width=True, hide_index=True)
 
+        # Transformation Breakdown
+        st.markdown("### 🛠️ Transformation Type Breakdown (Historical)")
+        wf_summary = f_df.groupby(['site', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
+        wf_summary['Avg Weekly Units'] = (wf_summary['units'] / num_weeks_in_data).astype(int)
+        wf_summary['Cleaned AHT (s)'] = wf_summary['aht'].map(lambda x: f"{x:.1f}")
+        st.dataframe(wf_summary.rename(columns={'workflow': 'Transformation Type'})[['site', 'Transformation Type', 'Cleaned AHT (s)', 'Avg Weekly Units']], use_container_width=True, hide_index=True)
+
     with tab2:
-        st.subheader(f"Future Forecast ({mode_label} Mode)")
+        st.subheader("Future Forecast Explorer")
+        
+        # UPDATED: Week Range Selection Logic
         week_options = []
         for i in range(4):
             start = current_monday + timedelta(weeks=i)
@@ -103,7 +108,7 @@ if uploaded_file:
         selected_week = st.selectbox("Select Forecast Week Range:", week_options)
         week_idx = week_options.index(selected_week) + 1
         
-        # All forecast tables below will now use 'site_growth_val' based on the toggle state
+        # Locale Forecast
         forecast_results = []
         for (site, loc), loc_data in f_df.groupby(['site', 'locale']):
             base_units = loc_data['units'].sum() / num_weeks_in_data
@@ -118,6 +123,20 @@ if uploaded_file:
                 "HC Needed": f"{hc_needed:.1f}", "Surplus/Deficit": f"{qas_per_site - hc_needed:.1f}"
             })
         st.dataframe(pd.DataFrame(forecast_results), use_container_width=True, hide_index=True)
+
+        # Transformation Forecast
+        st.markdown("### 🛠️ Predicted Transformation Breakdown")
+        wf_stats = f_df.groupby(['site', 'workflow']).agg({'units': 'sum', 'aht': get_trimmed_mean}).reset_index()
+        wf_forecast = []
+        for _, row in wf_stats.iterrows():
+            base_wf_units = row['units'] / num_weeks_in_data
+            pred_wf_units = base_wf_units * (1 + (site_growth_val * week_idx))
+            wf_forecast.append({
+                "Site": row['site'], "Transformation": row['workflow'],
+                "Exp. Units": int(pred_wf_units), 
+                "Req. Hours": f"{(pred_wf_units * row['aht']) / 3600:.1f}"
+            })
+        st.dataframe(pd.DataFrame(wf_forecast), use_container_width=True, hide_index=True)
 
 else:
     st.info("Please upload your Mercury CSV to begin.")
