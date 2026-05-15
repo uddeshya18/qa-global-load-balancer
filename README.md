@@ -1,3 +1,11 @@
+## 📦 Part of the Operations Excellence Suite
+
+This repository is an independent component of a modular, three-tier ecosystem designed to handle end-to-end workforce optimization and capacity logistics:
+
+1. **🌐 [Global Load Balancer](https://github.com/uddeshya18/ops-global-load-balancer):** Manages multi-site resource routing, high-level queue balancing, and macro-level SLA parity across diverse locales.
+2. **🧮 [Workforce Capacity Engine](https://github.com/uddeshya18/workforce-capacity-engine):** Handles granular, localized micro-headcount requirements using 95th-percentile trimmed-mean AHT modeling.
+3. **📈 [Demand Forecast Simulator (This Tool)](#):** Executes 4-week look-ahead predictive volume modeling and "What-If" growth scenario testing based on historical trends.
+
 # 📊 Strategic Capacity Planner
 
 The **Strategic Capacity Planner** is a data-driven operational engine designed to solve the "Headcount Paradox": maintaining high SLA compliance while minimizing resource waste. Built on a flexible Python backend, this tool transforms raw Mercury CSV exports into actionable 4-week workforce projections.
